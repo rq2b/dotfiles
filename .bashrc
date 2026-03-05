@@ -1,0 +1,1 @@
+stow/core/.bashrc

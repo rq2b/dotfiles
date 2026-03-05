@@ -1,4 +1,4 @@
 #!/bin/sh
-# fcitx5 intentionally disabled permanently
-# due to many language switching issues
+# Stub to disable Omarchy's default fcitx5 autostart.
+# This system intentionally does not use fcitx5.0
 exit 0

@@ -5,7 +5,7 @@ TMP_PATH="${1:?Usage: screenshot-gum-menu.sh /tmp/file.png name.png}"
 IMG_NAME="${2:?Usage: screenshot-gum-menu.sh /tmp/file.png name.png}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-MOVE_CURSOR="$SCRIPT_DIR/move-cursor-to-window.sh"
+MOVE_CURSOR="$HOME/Scripts/move-cursor-to-window/move-cursor-to-window.sh"
 
 "$MOVE_CURSOR" screenshot-gum
 

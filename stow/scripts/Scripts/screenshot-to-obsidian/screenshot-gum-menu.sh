@@ -4,7 +4,9 @@ set -euo pipefail
 TMP_PATH="${1:?Usage: screenshot-gum-menu.sh /tmp/file.png name.png}"
 IMG_NAME="${2:?Usage: screenshot-gum-menu.sh /tmp/file.png name.png}"
 
-MOVE_CURSOR="/home/rq2b/Scripts/move-cursor-to-window/move-cursor-to-window.sh"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MOVE_CURSOR="$SCRIPT_DIR/move-cursor-to-window.sh"
+
 "$MOVE_CURSOR" screenshot-gum
 
 ACTIONS_STRING=$(gum choose --no-limit \
@@ -42,14 +44,14 @@ done
 ACTIONS=("${NEW_ACTIONS[@]}")
 
 if [[ $OCR_SELECTED -eq 1 ]]; then
-  "$HOME/Scripts/screenshot-to-obsidian/ocr-to-obsidian.sh" "$TMP_PATH"
+  "$SCRIPT_DIR/ocr-to-obsidian.sh" "$TMP_PATH"
 fi
 
 # --- Run remaining actions in the user's chosen order (minus OCR) ---
 for ACTION in "${ACTIONS[@]}"; do
   case "$ACTION" in
     "Send to Obsidian")
-      "$HOME/Scripts/screenshot-to-obsidian/screenshot-to-obsidian.sh" "$TMP_PATH" "$IMG_NAME"
+      "$SCRIPT_DIR/screenshot-to-obsidian.sh" "$TMP_PATH" "$IMG_NAME"
       ;;
     "Save to Downloads")
       cp -f "$TMP_PATH" "$HOME/Downloads/$IMG_NAME"

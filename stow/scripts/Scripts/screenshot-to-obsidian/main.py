@@ -18,8 +18,7 @@ def load_env(path):
             os.environ.setdefault(key.strip(), value.strip())
 
 
-# Load from /home/rq2b/.env
-load_env("/home/rq2b/.env")
+load_env(str(Path.home()) / ".env")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:

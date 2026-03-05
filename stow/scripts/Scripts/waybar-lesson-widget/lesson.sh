@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIR="/home/rq2b/Scripts/waybar-lesson-widget"
+DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCHEDULE="$DIR/schedule.json"
 
 # Dependencies: jq

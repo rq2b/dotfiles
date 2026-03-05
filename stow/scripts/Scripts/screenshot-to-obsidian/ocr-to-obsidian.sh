@@ -2,7 +2,9 @@
 set -euo pipefail
 
 TMP_PATH="${1:?Usage: ocr-to-obsidian.sh /tmp/file.png}"
-OCR_PY="/home/rq2b/Scripts/screenshot-to-obsidian/main.py"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+OCR_PY="$SCRIPT_DIR/main.py"
 
 GET_NOTE="$HOME/Scripts/screenshot-to-obsidian/get-obsidian-title.sh"
 APPEND="$HOME/Scripts/screenshot-to-obsidian/append-obsidian-image.sh"

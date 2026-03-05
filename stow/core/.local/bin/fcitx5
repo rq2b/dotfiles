@@ -1,0 +1,4 @@
+#!/bin/sh
+# fcitx5 intentionally disabled permanently
+# due to many language switching issues
+exit 0

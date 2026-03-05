@@ -1,0 +1,16 @@
+.ssh/
+*.kdbx
+*.key
+*.pem
+
+.env
+.env.*
+
+.config/gh/hosts.yml
+.config/*/token*
+.config/*/cookies*
+
+.cache/
+.local/share/Trash/
+.DS_Store
+*.swp

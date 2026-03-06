@@ -1,19 +1,23 @@
 {
-  "reload_style_on_change": true,
-  "layer": "top",
-  "position": "top",
-  "spacing": 0,
-  "height": 26,
-  "modules-left": ["custom/omarchy", "hyprland/workspaces"],
-  "modules-center": ["clock", "custom/update", "custom/voxtype", "custom/screenrecording-indicator", "custom/idle-indicator", "custom/notification-silencing-indicator"],
-  "modules-right": [
-    "group/tray-expander",
-    "bluetooth",
-    "network",
-    "pulseaudio",
-    "cpu",
-    "battery"
-  ],
+  // setup
+  // "output": "HDMI-A-1",
+  "position": "bottom",
+
+  // custom overrides
+  "custom/clock": {
+    "exec": "$HOME/Scripts/waybar-lesson-widget/lesson.sh",
+    "return-type": "json",
+    "interval": 1,
+    "tooltip": false
+  },
+  "hyprland/language": {
+    "tooltip": false,
+    "format": "{}",
+    "format-en": "US",
+    "format-uk": "UA",
+    "format-ru": "RU",
+    "on-click": "hyprctl switchxkblayout current next >/dev/null 2>&1"
+  },
   "hyprland/workspaces": {
     "on-click": "activate",
     "format": "{icon}",
@@ -31,14 +35,28 @@
       "10": "0",
       "active": "󱓻"
     },
-    "persistent-workspaces": {
-      "1": [],
-      "2": [],
-      "3": [],
-      "4": [],
-      "5": []
-    }
+    "sort-by": "number",
+    "all-outputs": true
   },
+
+  "modules-left": ["custom/omarchy", "hyprland/workspaces"],
+  "modules-center": ["custom/clock", "custom/update", "custom/voxtype", "custom/screenrecording-indicator", "custom/idle-indicator", "custom/notification-silencing-indicator"],
+  "modules-right": [
+    "group/tray-expander",
+    "hyprland/language",
+    "bluetooth",
+    "network",
+    "pulseaudio",
+    "cpu",
+    "battery"
+  ],
+
+  // default settings
+  "reload_style_on_change": true,
+  "layer": "top",
+  "spacing": 0,
+  "height": 26,
+ 
   "custom/omarchy": {
     "format": "<span font='omarchy'>\ue900</span>",
     "on-click": "omarchy-menu",
@@ -53,7 +71,7 @@
     "signal": 7,
     "interval": 21600
   },
-
+ 
   "cpu": {
     "interval": 5,
     "format": "󰍛",
@@ -120,6 +138,7 @@
       "default": ["", "", ""]
     }
   },
+  
   "group/tray-expander": {
     "orientation": "inherit",
     "drawer": {

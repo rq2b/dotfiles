@@ -1,5 +1,12 @@
 @import "../omarchy/current/theme/waybar.css";
 
+/* custom language module CSS */
+#language {
+  min-width: 16px;
+  margin: 0 16px 0 -5px;
+  padding: 0;
+}
+
 * {
   background-color: @background;
   color: @foreground;

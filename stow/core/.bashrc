@@ -29,3 +29,11 @@ detach() {
   echo "Detached: $*"
   echo "Log: $log"
 }
+
+# loading modular shell configs
+if [ -d "$HOME/.bashrc.d" ]; then
+  for f in "$HOME"/.bashrc.d/*.sh; do
+    [ -e "$f" ] || continue
+    . "$f"
+  done
+fi

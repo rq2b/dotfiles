@@ -1,26 +1,67 @@
 # dotfiles
 
-## how to apply
+## Clone
 
 ```bash
-git clone https://github.com/rq2b/dotfiles ~/dotfiles  
-cd ~/dotfiles  
-stow --no-folding -d stow -t ~ *
+git clone https://github.com/rq2b/dotfiles ~/dotfiles
+cd ~/dotfiles
+````
+
+---
+
+## Apply dotfiles
+
+### Apply one package
+
+```bash
+cd ~/dotfiles/stow
+stow --no-folding -t ~ core
+```
+
+### Apply all packages
+
+```bash
+cd ~/dotfiles/stow
+stow --no-folding -t ~ *
 ```
 
 ---
 
-## how to update
+## Update
+
 ```bash
-cd ~/dotfiles  
-git pull  
-stow --no-folding -R -d stow -t ~ *
+cd ~/dotfiles
+git pull
+
+cd ~/dotfiles/stow
+stow --no-folding -R -t ~ *
 ```
 
 ---
 
-## how to double-check
+## Dry-run / verify
+
+### Check one package
+
 ```bash
-stow --no-folding -n -v -d stow -t ~ *
+cd ~/dotfiles/stow
+stow --no-folding -n -v -t ~ core
 ```
 
+### Check all packages
+
+```bash
+cd ~/dotfiles/stow
+stow --no-folding -n -v -t ~ *
+```
+
+---
+
+## Alternative: run from repo root
+
+```bash
+cd ~/dotfiles
+stow --no-folding -d stow -t ~ core
+```
+
+Do not use `*` from the repository root, because it expands to non-package files/directories there.

@@ -1,0 +1,472 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<'EOF'
+Usage:
+  xcleanup packages
+  xcleanup list <package>...
+  xcleanup list --all
+  xcleanup check <package>...
+  xcleanup check --all
+  xcleanup apply <package>...
+  xcleanup apply --all
+
+Notes:
+  - Target root is always $HOME
+  - Run from repo root or from the stow directory
+  - --no-folding is accepted for stow argument parity and ignored
+EOF
+}
+
+normalize_path() {
+    local path="$1"
+
+    python3 - <<'PY' "$path"
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+}
+
+join_target_path() {
+    local base="$1"
+    local rel="$2"
+
+    python3 - <<'PY' "$base" "$rel"
+import os, sys
+base = os.path.abspath(sys.argv[1])
+rel = sys.argv[2]
+print(os.path.normpath(os.path.join(base, rel)))
+PY
+}
+
+print_tilde_path() {
+    local path="$1"
+    local home_abs
+    home_abs="$(normalize_path "$HOME")"
+
+    if [[ "$path" == "$home_abs" ]]; then
+        printf '~'
+    elif [[ "$path" == "$home_abs/"* ]]; then
+        printf '~/%s' "${path#"$home_abs"/}"
+    else
+        printf '%s' "$path"
+    fi
+}
+
+detect_stow_root() {
+    local cwd
+    cwd="$(normalize_path "$(pwd)")"
+
+    if [[ -d "$cwd/stow" ]]; then
+        repo_root="$cwd"
+        stow_root="$(normalize_path "$cwd/stow")"
+        return
+    fi
+
+    if [[ "$(basename "$cwd")" == "stow" ]]; then
+        repo_root="$(dirname "$cwd")"
+        stow_root="$cwd"
+        return
+    fi
+
+    die "run from repo root or from the stow directory"
+}
+
+list_packages() {
+    printf 'Packages\n'
+    find "$stow_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+}
+
+collect_packages_from_args() {
+    local select_all=0
+    declare -ga packages=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --all)
+                select_all=1
+                shift
+                ;;
+            --no-folding)
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --)
+                shift
+                while [[ $# -gt 0 ]]; do
+                    packages+=("$1")
+                    shift
+                done
+                ;;
+            -*)
+                die "unknown option: $1"
+                ;;
+            *)
+                packages+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if (( select_all )); then
+        while IFS= read -r pkg; do
+            packages+=("$pkg")
+        done < <(find "$stow_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+    fi
+
+    ((${#packages[@]} > 0)) || die "no packages selected"
+
+    declare -A seen_pkg=()
+    declare -a final_packages=()
+    local pkg
+    for pkg in "${packages[@]}"; do
+        [[ -n "${seen_pkg[$pkg]:-}" ]] && continue
+        seen_pkg["$pkg"]=1
+        final_packages+=("$pkg")
+    done
+    packages=("${final_packages[@]}")
+
+    for pkg in "${packages[@]}"; do
+        [[ -d "$stow_root/$pkg" ]] || die "package does not exist: $pkg"
+    done
+}
+
+collect_records() {
+    declare -gA owners_by_target=()
+    declare -gA package_target_seen=()
+    declare -ga records=()
+
+    local pkg pkg_root rel target_path key
+    for pkg in "${packages[@]}"; do
+        pkg_root="$stow_root/$pkg"
+
+        while IFS= read -r -d '' rel; do
+            [[ -n "$rel" ]] || continue
+
+            target_path="$(join_target_path "$HOME" "$rel")"
+            key="$pkg"$'\t'"$target_path"
+
+            if [[ -n "${package_target_seen[$key]:-}" ]]; then
+                continue
+            fi
+            package_target_seen["$key"]=1
+
+            records+=("$pkg"$'\t'"$rel"$'\t'"$target_path")
+
+            if [[ -n "${owners_by_target[$target_path]:-}" ]]; then
+                case $'\n'"${owners_by_target[$target_path]}"$'\n' in
+                    *$'\n'"$pkg"$'\n'*) ;;
+                    *) owners_by_target["$target_path"]+=$'\n'"$pkg" ;;
+                esac
+            else
+                owners_by_target["$target_path"]="$pkg"
+            fi
+        done < <(
+            cd "$pkg_root" &&
+            find . -mindepth 1 \( -type f -o -type l \) -printf '%P\0' | sort -z
+        )
+    done
+}
+
+
+
+classify_leaf_state() {
+    local target_path="$1"
+    local source_path="$2"
+    local target_parent target_link target_abs
+
+    source_path="$(normalize_path "$source_path")"
+
+    if [[ -L "$target_path" ]]; then
+        target_parent="$(dirname "$target_path")"
+        target_link="$(readlink -- "$target_path" 2>/dev/null || true)"
+
+        if [[ -z "$target_link" ]]; then
+            printf 'wrong_symlink'
+            return
+        fi
+
+        target_abs="$(
+            python3 - <<'PY' "$target_parent" "$target_link"
+import os, sys
+parent = os.path.abspath(sys.argv[1])
+link = sys.argv[2]
+print(os.path.abspath(os.path.join(parent, link)))
+PY
+        )"
+
+        if [[ "$target_abs" == "$source_path" ]]; then
+            printf 'correct_symlink'
+        else
+            printf 'wrong_symlink'
+        fi
+    elif [[ -f "$target_path" ]]; then
+        printf 'real_file'
+    elif [[ -d "$target_path" ]]; then
+        printf 'real_directory'
+    elif [[ -e "$target_path" ]]; then
+        printf 'other'
+    else
+        printf 'missing'
+    fi
+}
+
+classify_parent_status() {
+    local target_path="$1"
+    local current parent_list=()
+    local idx component path_so_far
+
+    current="$(dirname "$target_path")"
+
+    while :; do
+        if [[ "$current" == "$HOME" ]]; then
+            break
+        fi
+
+        if [[ "$current" == "/" ]]; then
+            break
+        fi
+
+        parent_list+=("$current")
+        current="$(dirname "$current")"
+    done
+
+    for (( idx=${#parent_list[@]}-1 ; idx>=0 ; idx-- )); do
+        path_so_far="${parent_list[$idx]}"
+
+        if [[ -L "$path_so_far" ]]; then
+            printf 'parent_is_symlink\t%s\n' "$path_so_far"
+            return
+        elif [[ -f "$path_so_far" ]]; then
+            printf 'parent_is_file\t%s\n' "$path_so_far"
+            return
+        elif [[ -d "$path_so_far" ]]; then
+            continue
+        elif [[ -e "$path_so_far" ]]; then
+            printf 'parent_is_other\t%s\n' "$path_so_far"
+            return
+        else
+            printf 'missing_parents_start_at\t%s\n' "$path_so_far"
+            return
+        fi
+    done
+
+    printf 'ok\t-\n'
+}
+
+ensure_parent_dirs() {
+    local target_path="$1"
+    local parent
+    parent="$(dirname "$target_path")"
+
+    if [[ ! -d "$parent" ]]; then
+        mkdir -p -- "$parent"
+        printf 'MKDIR\t%s\n' "$(print_tilde_path "$parent")"
+        return 0
+    fi
+
+    return 1
+}
+
+run_list() {
+    local record pkg rel target_path
+
+    if ((${#records[@]} == 0)); then
+        printf 'No managed leaves found.\n'
+        exit 0
+    fi
+
+    printf 'Package\tTarget\n'
+    for record in "${records[@]}"; do
+        IFS=$'\t' read -r pkg rel target_path <<< "$record"
+        printf '%s\t%s\n' "$pkg" "$(print_tilde_path "$target_path")"
+    done
+}
+
+run_check() {
+    local record pkg rel target_path pkg_root source_path
+    local leaf_state parent_kind parent_path status
+
+    if ((${#records[@]} == 0)); then
+        printf 'No managed leaves found.\n'
+        exit 0
+    fi
+
+    printf 'Status\tPackage\tTarget\tLeaf\tParents\n'
+
+    for record in "${records[@]}"; do
+        IFS=$'\t' read -r pkg rel target_path <<< "$record"
+        pkg_root="$stow_root/$pkg"
+        source_path="$pkg_root/$rel"
+
+        leaf_state="$(classify_leaf_state "$target_path" "$source_path")"
+        IFS=$'\t' read -r parent_kind parent_path <<< "$(classify_parent_status "$target_path")"
+
+        if [[ "$parent_kind" == "ok" ]]; then
+            status="OK"
+        else
+            status="ERROR"
+        fi
+
+        if [[ "$parent_kind" == "ok" ]]; then
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$status" \
+                "$pkg" \
+                "$(print_tilde_path "$target_path")" \
+                "$leaf_state" \
+                "ok"
+        else
+            printf '%s\t%s\t%s\t%s\t%s: %s\n' \
+                "$status" \
+                "$pkg" \
+                "$(print_tilde_path "$target_path")" \
+                "$leaf_state" \
+                "$parent_kind" \
+                "$(print_tilde_path "$parent_path")"
+        fi
+    done
+}
+
+run_apply() {
+    local record pkg rel target_path pkg_root source_path
+    local leaf_state parent_kind parent_path
+
+    local created_parents=0
+    local removed_symlinks=0
+    local removed_files=0
+    local skipped_correct=0
+    local skipped_missing=0
+    local errors=0
+
+    # First pass: detect blockers
+    for record in "${records[@]}"; do
+        IFS=$'\t' read -r pkg rel target_path <<< "$record"
+
+        pkg_root="$stow_root/$pkg"
+        source_path="$pkg_root/$rel"
+
+        leaf_state="$(classify_leaf_state "$target_path" "$source_path")"
+        IFS=$'\t' read -r parent_kind parent_path <<< "$(classify_parent_status "$target_path")"
+
+        case "$parent_kind" in
+            ok|missing_parents_start_at) ;;
+            *)
+                printf 'ERROR\t%s : %s\n' \
+                    "$(print_tilde_path "$target_path")" \
+                    "$parent_kind"
+                errors=1
+                ;;
+        esac
+
+        case "$leaf_state" in
+            correct_symlink|missing|wrong_symlink|real_file) ;;
+            *)
+                printf 'ERROR\t%s : leaf is %s\n' \
+                    "$(print_tilde_path "$target_path")" \
+                    "$leaf_state"
+                errors=1
+                ;;
+        esac
+    done
+
+    if (( errors )); then
+        die "apply aborted due to blocking conditions"
+    fi
+
+    # Second pass: perform actions
+    for record in "${records[@]}"; do
+        IFS=$'\t' read -r pkg rel target_path <<< "$record"
+
+        pkg_root="$stow_root/$pkg"
+        source_path="$pkg_root/$rel"
+
+        leaf_state="$(classify_leaf_state "$target_path" "$source_path")"
+        IFS=$'\t' read -r parent_kind parent_path <<< "$(classify_parent_status "$target_path")"
+
+        if [[ "$parent_kind" == "missing_parents_start_at" ]]; then
+            mkdir -p -- "$(dirname "$target_path")"
+            printf 'MKDIR\t%s\n' "$(print_tilde_path "$(dirname "$target_path")")"
+            ((created_parents++))
+        fi
+
+        case "$leaf_state" in
+            correct_symlink)
+                printf 'SKIP\t%s\n' "$(print_tilde_path "$target_path")"
+                ((skipped_correct++))
+                ;;
+
+            missing)
+                printf 'SKIP\t%s\n' "$(print_tilde_path "$target_path")"
+                ((skipped_missing++))
+                ;;
+
+            wrong_symlink)
+                rm -- "$target_path"
+                printf 'REMOVE\t%s\n' "$(print_tilde_path "$target_path")"
+                ((removed_symlinks++))
+                ;;
+
+            real_file)
+                rm -- "$target_path"
+                printf 'REMOVE\t%s\n' "$(print_tilde_path "$target_path")"
+                ((removed_files++))
+                ;;
+        esac
+    done
+
+    printf '\nSummary\n'
+    printf '  parent dirs created: %d\n' "$created_parents"
+    printf '  wrong symlinks removed: %d\n' "$removed_symlinks"
+    printf '  real files removed: %d\n' "$removed_files"
+    printf '  skipped correct symlinks: %d\n' "$skipped_correct"
+    printf '  skipped missing leaves: %d\n' "$skipped_missing"
+}
+
+command="${1:-}"
+[[ -n "$command" ]] || {
+    usage
+    exit 1
+}
+shift || true
+
+case "$command" in
+    packages|list|check|apply) ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    *)
+        die "unknown command: $command"
+        ;;
+esac
+
+detect_stow_root
+
+if [[ "$command" == "packages" ]]; then
+    list_packages
+    exit 0
+fi
+
+collect_packages_from_args "$@"
+collect_records
+
+case "$command" in
+    list)
+        run_list
+        ;;
+    check)
+        run_check
+        ;;
+    apply)
+        run_apply
+        ;;
+esac

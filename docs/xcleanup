@@ -1,0 +1,395 @@
+# xcleanup
+
+`xcleanup` prepares the target filesystem so that a normal
+
+```
+stow --no-folding <packages>
+```
+
+run can succeed.
+
+It **does not create symlinks** and **does not replace Stow**.
+Its only job is to remove blocking files and ensure parent directories exist.
+
+The repository remains the authoritative source of truth.
+
+Script location in this repository:
+
+```
+dotfiles/scripts/xcleanup
+```
+
+Typical usage location:
+
+```
+~/dotfiles/stow
+```
+
+---
+
+# Commands
+
+## List available packages
+
+```bash
+xcleanup packages
+```
+
+Example:
+
+```bash
+xcleanup packages
+
+# output example
+core
+cursor
+hypr
+mime
+scripts
+waybar
+```
+
+Packages correspond to directories inside:
+
+```
+dotfiles/stow/
+```
+
+---
+
+## List managed target paths
+
+```bash
+xcleanup list <package>...
+```
+
+Example:
+
+```bash
+xcleanup list hypr
+```
+
+Example output:
+
+```
+hypr    ~/.config/hypr/autostart.conf
+hypr    ~/.config/hypr/hyprland.conf
+hypr    ~/.config/hypr/input.conf
+```
+
+This shows the **target paths that Stow will manage**.
+
+Paths are computed as:
+
+```
+$HOME/<path relative to package root>
+```
+
+Example mapping:
+
+```
+stow/core/.bashrc
+→ ~/.bashrc
+
+stow/hypr/.config/hypr/hyprland.conf
+→ ~/.config/hypr/hyprland.conf
+```
+
+---
+
+### List all packages
+
+```bash
+xcleanup list --all
+```
+
+Example:
+
+```bash
+xcleanup list --all
+```
+
+This prints managed paths for every package under `stow/`.
+
+---
+
+# Target inspection
+
+## Check target state
+
+```bash
+xcleanup check <package>...
+```
+
+Example:
+
+```bash
+xcleanup check hypr
+```
+
+Example output:
+
+```
+Status   Package   Target                               Leaf              Parents
+OK       hypr      ~/.config/hypr/hyprland.conf          correct_symlink   ok
+WARN     hypr      ~/.config/hypr/input.conf             real_file         ok
+WARN     hypr      ~/.config/hypr/autostart.conf         missing           ok
+```
+
+The command is **read-only** and does not modify the filesystem.
+
+---
+
+### Leaf states
+
+The target leaf can be classified as:
+
+```
+missing
+correct_symlink
+wrong_symlink
+real_file
+real_directory
+other
+```
+
+Meaning:
+
+```
+missing          → no file exists
+correct_symlink  → already points to the package leaf
+wrong_symlink    → symlink points elsewhere
+real_file        → regular file blocking the target
+real_directory   → directory blocking the target
+other            → device, socket, etc.
+```
+
+---
+
+### Parent states
+
+Parent directories are checked independently.
+
+Possible states:
+
+```
+ok
+missing_parents_start_at <path>
+parent_is_file <path>
+parent_is_symlink <path>
+parent_is_other <path>
+```
+
+Meaning:
+
+```
+ok                     → directory chain exists
+missing_parents_start  → directories must be created
+parent_is_file         → file blocks directory creation
+parent_is_symlink      → symlink blocks directory creation
+parent_is_other        → special file blocks creation
+```
+
+---
+
+### Check all packages
+
+```bash
+xcleanup check --all
+```
+
+Example:
+
+```bash
+xcleanup check --all
+```
+
+This inspects every package under `stow/`.
+
+---
+
+# Preparing the filesystem
+
+## Apply safe cleanup
+
+```bash
+xcleanup apply <package>...
+```
+
+Example:
+
+```bash
+xcleanup apply hypr
+```
+
+Example output:
+
+```
+MKDIR   ~/.config/hypr
+REMOVE  ~/.config/hypr/hyprland.conf
+SKIP    ~/.config/hypr/input.conf
+```
+
+Meaning:
+
+```
+MKDIR   → parent directories created
+REMOVE  → blocking file removed
+SKIP    → target already valid
+```
+
+After `apply`, the filesystem satisfies the invariant:
+
+```
+all ancestors are real directories
+leaf is missing or correct_symlink
+```
+
+This guarantees that the following command will succeed:
+
+```
+stow --no-folding <packages>
+```
+
+---
+
+## Apply to all packages
+
+```bash
+xcleanup apply --all
+```
+
+Example:
+
+```bash
+xcleanup apply --all
+```
+
+Equivalent to running `apply` for every package under `stow/`.
+
+---
+
+# Mutation rules
+
+`xcleanup apply` performs **only safe mutations**.
+
+Actions taken:
+
+```
+create missing parent directories
+remove wrong leaf symlinks
+remove conflicting real files
+leave correct symlinks untouched
+leave missing targets untouched
+```
+
+---
+
+# Blocking conditions
+
+`xcleanup` refuses to proceed when unsafe conditions exist.
+
+Examples:
+
+```
+parent_is_file
+parent_is_symlink
+parent_is_other
+real_directory leaf
+other leaf types
+```
+
+Example failure:
+
+```
+ERROR ~/.config/hypr/hyprland.conf : parent_is_file
+ERROR: apply aborted due to blocking conditions
+```
+
+This prevents accidental deletion of unrelated directories or files.
+
+---
+
+# Design principles
+
+`xcleanup` intentionally does **not**:
+
+```
+create symlinks
+run stow automatically
+replace directories with symlinks
+follow parent symlinks
+delete blocking directories
+create metadata
+track ownership state
+```
+
+It is strictly a **preparation step** for Stow.
+
+Typical workflow:
+
+```
+cd ~/dotfiles/stow
+
+xcleanup apply --all
+
+stow --no-folding *
+```
+
+---
+
+# Filesystem model
+
+The intended end state is:
+
+```
+directories → real directories
+files       → symlinks created by stow
+```
+
+Example:
+
+```
+~/.config/hypr/                (directory)
+
+~/.config/hypr/hyprland.conf
+→ ../../dotfiles/stow/hypr/.config/hypr/hyprland.conf
+```
+
+This matches the behavior of:
+
+```
+stow --no-folding
+```
+
+---
+
+# Summary
+
+`xcleanup` is a **Stow preparation utility**.
+
+Responsibilities:
+
+```
+detect managed leaf targets
+inspect filesystem state
+remove blocking files
+create missing parent directories
+```
+
+Non-responsibilities:
+
+```
+symlink creation
+configuration management
+backup or rollback
+stow invocation
+```
+
+Its only goal is to ensure that a normal:
+
+```
+stow --no-folding
+```
+
+run can execute without conflicts.

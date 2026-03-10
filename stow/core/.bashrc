@@ -12,6 +12,7 @@ source ~/.local/share/omarchy/default/bash/rc
 
 # aliases
 alias claer='clear'
+alias terminal-copy='kitty @ get-text --extent=all | wl-copy'
 
 # utility functions
 detach() {

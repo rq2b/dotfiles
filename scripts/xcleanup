@@ -395,30 +395,30 @@ run_apply() {
         if [[ "$parent_kind" == "missing_parents_start_at" ]]; then
             mkdir -p -- "$(dirname "$target_path")"
             printf 'MKDIR\t%s\n' "$(print_tilde_path "$(dirname "$target_path")")"
-            ((created_parents++))
+            ((++created_parents))
         fi
 
         case "$leaf_state" in
             correct_symlink)
                 printf 'SKIP\t%s\n' "$(print_tilde_path "$target_path")"
-                ((skipped_correct++))
+                ((++skipped_correct))
                 ;;
 
             missing)
                 printf 'SKIP\t%s\n' "$(print_tilde_path "$target_path")"
-                ((skipped_missing++))
+                ((++skipped_missing))
                 ;;
 
             wrong_symlink)
                 rm -- "$target_path"
                 printf 'REMOVE\t%s\n' "$(print_tilde_path "$target_path")"
-                ((removed_symlinks++))
+                ((++removed_symlinks))
                 ;;
 
             real_file)
                 rm -- "$target_path"
                 printf 'REMOVE\t%s\n' "$(print_tilde_path "$target_path")"
-                ((removed_files++))
+                ((++removed_files))
                 ;;
         esac
     done

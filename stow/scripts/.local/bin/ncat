@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shopt -s nullglob
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: ncat [options] <file/glob> [more files...]
+
+Options:
+  -r, --recursive        Recurse into directories
+  -d, --directory DIR    Resolve inputs relative to DIR instead of cwd
+  -h, --help             Show this help
+EOF
+}
+
+recursive=false
+target_dir="."
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -r|--recursive)
+      recursive=true
+      shift
+      ;;
+    -d|--directory)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --directory requires a path" >&2
+        usage
+        exit 1
+      fi
+      target_dir="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Error: unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ ! -d "$target_dir" ]]; then
+  echo "Error: target directory is not a directory: $(realpath -m -- "$target_dir")" >&2
+  exit 1
+fi
+
+declare -a files=()
+
+if $recursive; then
+  if (( $# == 0 )); then
+    mapfile -t files < <(find "$target_dir" -type f | sort)
+  else
+    for arg in "$@"; do
+      path="$target_dir/$arg"
+
+      if [[ -d "$path" ]]; then
+        while IFS= read -r f; do
+          files+=("$f")
+        done < <(find "$path" -type f | sort)
+        continue
+      fi
+
+      matches=( $path )
+      if ((${#matches[@]})); then
+        for match in "${matches[@]}"; do
+          if [[ -d "$match" ]]; then
+            while IFS= read -r f; do
+              files+=("$f")
+            done < <(find "$match" -type f | sort)
+          else
+            files+=("$match")
+          fi
+        done
+      else
+        files+=("$path")
+      fi
+    done
+  fi
+else
+  if (( $# == 0 )); then
+    echo "Error: no input files provided" >&2
+    usage
+    exit 1
+  fi
+
+  for arg in "$@"; do
+    path="$target_dir/$arg"
+    matches=( $path )
+
+    if ((${#matches[@]})); then
+      files+=("${matches[@]}")
+    else
+      files+=("$path")
+    fi
+  done
+fi
+
+declare -A seen=()
+declare -a uniq_files=()
+
+for f in "${files[@]}"; do
+  [[ -n "${seen["$f"]+x}" ]] && continue
+  seen["$f"]=1
+  uniq_files+=("$f")
+done
+
+for f in "${uniq_files[@]}"; do
+  if [[ ! -f "$f" ]]; then
+    printf '###### %s ######\n' "$(realpath -m -- "$f")"
+    printf '[skipped: not a regular file]\n\n'
+    continue
+  fi
+
+  printf '###### %s ######\n\n' "$(realpath -- "$f")"
+  cat -- "$f"
+  printf '\n\n'
+done

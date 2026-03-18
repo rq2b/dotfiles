@@ -116,11 +116,11 @@ for f in "${files[@]}"; do
 done
 
 for f in "${uniq_files[@]}"; do
-  if [[ ! -f "$f" ]]; then
-    printf '###### %s ######\n' "$(realpath -m -- "$f")"
-    printf '[skipped: not a regular file]\n\n'
-    continue
-  fi
+  # if [[ ! -f "$f" ]]; then
+    # printf '###### %s ######\n' "$(realpath -m -- "$f")"
+    # printf '[skipped: not a regular file]\n\n'
+    # continue
+  # fi
 
   printf '###### %s ######\n\n' "$(realpath -- "$f")"
   cat -- "$f"

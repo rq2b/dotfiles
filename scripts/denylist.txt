@@ -1,0 +1,29 @@
+# network discovery helpers
+avahi-discover.desktop
+bssh.desktop
+bvnc.desktop
+
+# java junk
+java-java-openjdk.desktop
+java-java17-openjdk.desktop
+jconsole-java-openjdk.desktop
+jconsole-java17-openjdk.desktop
+jshell-java-openjdk.desktop
+jshell-java17-openjdk.desktop
+
+# geo handlers
+google-maps-geo-handler.desktop
+openstreetmap-geo-handler.desktop
+wheelmap-geo-handler.desktop
+
+# plugin spam
+in.lsp_plug.lsp_plugins_*.desktop
+
+# other launcher clutter
+fcitx5-wayland-launcher.desktop
+org.freedesktop.Xwayland.desktop
+org.gnome.Evince-previewer.desktop
+polkit-gnome-authentication-agent-1.desktop
+signon-ui.desktop
+user-dirs-update-gtk.desktop
+xdg-desktop-portal-gtk.desktop

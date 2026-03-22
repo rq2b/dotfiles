@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DENYLIST_FILE="$SCRIPT_DIR/denylist.txt"
+LOCAL_APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+
+mkdir -p "$LOCAL_APPS_DIR"
+
+if [[ ! -f "$DENYLIST_FILE" ]]; then
+  echo "denylist not found: $DENYLIST_FILE" >&2
+  exit 1
+fi
+
+tmp_patterns="$(mktemp)"
+tmp_matches="$(mktemp)"
+tmp_basenames="$(mktemp)"
+trap 'rm -f "$tmp_patterns" "$tmp_matches" "$tmp_basenames"' EXIT
+
+awk '
+  /^[[:space:]]*#/ { next }
+  /^[[:space:]]*$/ { next }
+  { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }
+' "$DENYLIST_FILE" > "$tmp_patterns"
+
+while IFS= read -r pattern; do
+  [[ -n "$pattern" ]] || continue
+
+  while IFS= read -r src; do
+    base="$(basename "$src")"
+    if [[ "$base" == $pattern ]]; then
+      printf '%s\n' "$src"
+    fi
+  done < <(find /usr/share/applications "$LOCAL_APPS_DIR" -maxdepth 1 -type f -name '*.desktop' 2>/dev/null)
+
+done < "$tmp_patterns" | awk '!seen[$0]++' > "$tmp_matches"
+
+xargs -n1 basename < "$tmp_matches" | awk '!seen[$0]++' > "$tmp_basenames"
+
+while IFS= read -r local_file; do
+  [[ -n "$local_file" ]] || continue
+  base="$(basename "$local_file")"
+
+  if ! grep -Fxq "$base" "$tmp_basenames"; then
+    rm -f -- "$local_file"
+    echo "removed stale override: $base"
+  fi
+done < <(
+  find "$LOCAL_APPS_DIR" -maxdepth 1 -type f -name '*.desktop' -exec grep -l '^X-AppMenu-Cleanup-Managed=true$' {} +
+)
+
+while IFS= read -r src; do
+  [[ -n "$src" ]] || continue
+
+  base="$(basename "$src")"
+  dst="$LOCAL_APPS_DIR/$base"
+
+  if [[ -f "$dst" ]] && grep -qx 'X-AppMenu-Cleanup-Managed=true' "$dst" 2>/dev/null; then
+    status="updated"
+  else
+    status="masked"
+  fi
+
+  cp "$src" "$dst"
+
+  python3 - "$dst" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+text = p.read_text(encoding="utf-8", errors="ignore")
+lines = text.splitlines()
+
+filtered = []
+for line in lines:
+    if line in (
+        "Hidden=true",
+        "NoDisplay=true",
+        "X-AppMenu-Cleanup-Managed=true",
+    ):
+        continue
+    filtered.append(line)
+
+filtered += [
+    "",
+    "Hidden=true",
+    "NoDisplay=true",
+    "X-AppMenu-Cleanup-Managed=true",
+]
+
+p.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+PY
+
+  echo "$status: $base"
+done < "$tmp_matches"
+
+update-desktop-database "$LOCAL_APPS_DIR" >/dev/null 2>&1 || true
+
+if systemctl --user --quiet is-active elephant; then
+  systemctl --user restart elephant
+fi
+
+echo "done"
+
+# command to remove the overrides
+# find ~/.local/share/applications -maxdepth 1 -type f -name '*.desktop' \
+#   -exec grep -l '^X-AppMenu-Cleanup-Managed=true$' {} + \
+#   | xargs -r rm -v --
+
+# update-desktop-database ~/.local/share/applications 2>/dev/null || true
+# systemctl --user restart elephant

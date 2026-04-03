@@ -22,6 +22,48 @@ function FormatName(filename)
   return name
 end
 
+-- helper: run command safely
+local function read_cmd(cmd)
+  local handle = io.popen(cmd)
+  if not handle then return nil end
+  local result = handle:read("*l")
+  handle:close()
+  return result
+end
+
+-- detect active monitor
+local function get_active_monitor()
+  return read_cmd(
+    "hyprctl monitors -j | jq -r '.[] | select(.focused==true).name'"
+  )
+end
+
+-- map monitor → mode
+local function get_mode(monitor)
+  if monitor == "DP-1" then
+    return "horizontal"
+  elseif monitor == "HDMI-A-1" then
+    return "vertical"
+  else
+    return "horizontal" -- safe fallback
+  end
+end
+
+local function get_aspect_mode(file)
+  local filename = file:match("([^/]+)$")
+  if not filename then return nil end
+
+  filename = filename:lower()
+
+  if filename:find("horizontal") then
+    return "horizontal"
+  elseif filename:find("vertical") then
+    return "vertical"
+  end
+
+  return nil
+end
+
 function GetEntries()
   local entries = {}
   local home = os.getenv("HOME")
@@ -32,6 +74,10 @@ function GetEntries()
   if theme_name_file then
     theme_name_file:close()
   end
+
+  -- determine active monitor + mode
+  local active_monitor = get_active_monitor()
+  local mode = get_mode(active_monitor)
 
   -- Directories to search
   local dirs = {
@@ -53,8 +99,13 @@ function GetEntries()
       for background in handle:lines() do
         local filename = background:match("([^/]+)$")
         if filename and not seen[filename] then
-          seen[filename] = true
-          table.insert(entries, {
+          local aspect = get_aspect_mode(background)
+
+          -- SAFE filter: allow if matches OR detection failed
+          if aspect == nil or aspect == mode then
+            seen[filename] = true
+
+            table.insert(entries, {
             Text = FormatName(filename),
             Value = background,
             Actions = {
@@ -63,6 +114,7 @@ function GetEntries()
             Preview = background,
             PreviewType = "file",
           })
+          end
         end
       end
       handle:close()

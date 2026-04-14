@@ -14,6 +14,12 @@ source ~/.local/share/omarchy/default/bash/rc
 alias claer='clear'
 alias terminal-copy='kitty @ get-text --extent=all | wl-copy'
 
+alias download-opus='yt-dlp -f "bestaudio[ext=webm]/bestaudio" \
+  --extract-audio --audio-format opus --audio-quality 0 \
+  --embed-metadata --embed-thumbnail \
+  --parse-metadata "%(title)s:%(meta_title)s" \
+  -o "%(title)s.%(ext)s"'
+
 # utility functions
 detach() {
   if [ "$#" -eq 0 ]; then

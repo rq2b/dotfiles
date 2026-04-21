@@ -14,11 +14,28 @@ source ~/.local/share/omarchy/default/bash/rc
 alias claer='clear'
 alias terminal-copy='kitty @ get-text --extent=all | wl-copy'
 
-alias download-opus='yt-dlp -f "bestaudio[ext=webm]/bestaudio" \
-  --extract-audio --audio-format opus --audio-quality 0 \
-  --embed-metadata --embed-thumbnail \
-  --parse-metadata "%(title)s:%(meta_title)s" \
-  -o "%(title)s.%(ext)s"'
+download-opus() {
+  yt-dlp -f "bestaudio[ext=webm]/bestaudio" \
+    --extract-audio --audio-format opus --audio-quality 0 \
+    --embed-metadata --embed-thumbnail \
+    --parse-metadata "%(title)s:%(meta_title)s" \
+    -o "%(title)s.%(ext)s" "$@"
+}
+
+yttxt() {
+  local url="$1"
+  local id
+
+  id=$(yt-dlp --get-id "$url") || return
+
+  yt-dlp --skip-download \
+    --write-auto-subs --write-subs \
+    --sub-langs "en.*" \
+    --sub-format "vtt" \
+    -o "%(id)s.%(ext)s" "$url" || return
+
+  sed -E 's/<[^>]+>//g; /^[0-9:.]+ --> [0-9:.]+$/d; /^\s*$/d' "$id.en.vtt"
+}
 
 # utility functions
 detach() {

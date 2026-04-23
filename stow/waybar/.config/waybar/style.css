@@ -5,6 +5,7 @@
   min-width: 16px;
   margin: 0 16px 0 -5px;
   padding: 0;
+  font-family: 'JetBrains Mono';
 }
 
 * {
@@ -14,7 +15,7 @@
   border: none;
   border-radius: 0;
   min-height: 0;
-  font-family: 'JetBrainsMono Nerd Font';
+  font-family: 'JetBrainsMono Nerd Font', 'JetBrains Mono', monospace;
   font-size: 12px;
 }
 

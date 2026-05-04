@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+BASE="/home/staging/Syncthing/ITStep/Media/gpt-context"
+COLD="$BASE/cold"
+
+# Fail fast if base directory does not exist
+if [[ ! -d "$BASE" ]]; then
+    echo "Base directory does not exist:"
+    echo "$BASE"
+    exit 1
+fi
+
+# Create archive directory if missing
+mkdir -p "$COLD"
+
+INPUT_NAME="${1:-}"
+
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+
+# Parse filename / extension
+if [[ -z "$INPUT_NAME" ]]; then
+    FILENAME="${TIMESTAMP}.txt"
+else
+    BASENAME="$(basename -- "$INPUT_NAME")"
+
+    if [[ "$BASENAME" == *.* ]]; then
+        NAME="${BASENAME%.*}"
+        EXT="${BASENAME##*.}"
+    else
+        NAME="$BASENAME"
+        EXT="txt"
+    fi
+
+    FILENAME="${TIMESTAMP}_${NAME}.${EXT}"
+fi
+
+TARGET="$BASE/$FILENAME"
+
+# Move existing hot files into cold/
+find "$BASE" \
+    -maxdepth 1 \
+    -type f \
+    ! -name '.*' \
+    -exec mv {} "$COLD"/ \;
+
+# Input priority:
+# 1. stdin
+# 2. clipboard
+if [ -p /dev/stdin ]; then
+    cat > "$TARGET"
+else
+    CLIP="$(
+        wl-paste 2>/dev/null ||
+        xclip -selection clipboard -o 2>/dev/null ||
+        true
+    )"
+
+    if [[ -z "$CLIP" ]]; then
+        echo "No stdin or clipboard content."
+        exit 1
+    fi
+
+    printf "%s" "$CLIP" > "$TARGET"
+fi
+
+# Open Nautilus
+nautilus "$BASE" >/dev/null 2>&1 &
+
+echo "$TARGET"

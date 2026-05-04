@@ -13,6 +13,7 @@ source ~/.local/share/omarchy/default/bash/rc
 # aliases
 alias claer='clear'
 alias terminal-copy='kitty @ get-text --extent=all | wl-copy'
+alias striprefs="perl -0777 -i -pe 's/\s*:contentReference\[oaicite:\d+\]\{index=\d+\}//g'"
 
 download-opus() {
   yt-dlp -f "bestaudio[ext=webm]/bestaudio" \

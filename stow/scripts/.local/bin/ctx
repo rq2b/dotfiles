@@ -8,18 +8,40 @@ COLD="$BASE/cold"
 show_help() {
     cat <<EOF
 Usage:
-  ctx
-  ctx <name>
-  ctx <name.ext>
-  ctx <name> <ext>
+  ctx <ext>
+  ctx <name parts...> <ext>
 
 Examples:
-  ctx
-  ctx notes
-  ctx notes.md
+  ctx txt
   ctx notes md
-  cat file.py | ctx auth py
+  ctx auth util py
+  ctx ctx util sh
+  cat file.py | ctx auth handler py
 EOF
+}
+
+ALLOWED_EXTENSIONS=(
+    txt md rst
+    json yaml yml toml ini conf
+    py pyw sh bash zsh fish
+    c h cpp hpp cc
+    js ts jsx tsx
+    html css scss
+    java kt rs go
+    diff patch log tree
+    csv xml sql
+)
+
+is_allowed_extension() {
+    local ext="$1"
+
+    for allowed in "${ALLOWED_EXTENSIONS[@]}"; do
+        if [[ "$allowed" == "$ext" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 # Help
@@ -41,28 +63,58 @@ mkdir -p "$COLD"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
 NAME=""
-EXT="txt"
+EXT=""
 
-# Argument parsing
+# Extension is now required
 if [[ $# -eq 0 ]]; then
-    :
-elif [[ $# -eq 1 ]]; then
-    INPUT="$1"
-
-    BASENAME="$(basename -- "$INPUT")"
-
-    if [[ "$BASENAME" == *.* ]]; then
-        NAME="${BASENAME%.*}"
-        EXT="${BASENAME##*.}"
-    else
-        NAME="$BASENAME"
-    fi
-elif [[ $# -eq 2 ]]; then
-    NAME="$(basename -- "$1")"
-    EXT="$2"
-else
-    echo "Too many arguments."
+    echo "Extension is required."
+    echo
+    show_help
     exit 1
+fi
+
+# Last argument = extension
+EXT="${!#}"
+
+# Normalize extension
+EXT="$(printf '%s' "$EXT" | tr '[:upper:]' '[:lower:]')"
+
+# Validate extension
+if ! is_allowed_extension "$EXT"; then
+    echo "Refusing to save file."
+    echo "Unknown or disallowed extension: '$EXT'"
+    echo
+    echo "Allowed extensions:"
+    printf '  %s\n' "${ALLOWED_EXTENSIONS[@]}"
+    exit 1
+fi
+
+# Everything except last arg = filename
+if [[ $# -gt 1 ]]; then
+    PARTS=("${@:1:$#-1}")
+
+    NAME="$(printf '%s ' "${PARTS[@]}")"
+
+    # Trim trailing space
+    NAME="${NAME% }"
+
+    # Normalize
+    NAME="${NAME// /-}"
+
+    # Lowercase
+    NAME="$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]')"
+
+    # Remove dangerous characters
+    NAME="$(printf '%s' "$NAME" | sed 's/[^a-zA-Z0-9._-]/-/g')"
+
+    # Prevent path traversal
+    NAME="$(basename -- "$NAME")"
+
+    # Collapse repeated dashes
+    NAME="$(printf '%s' "$NAME" | sed 's/-\{2,\}/-/g')"
+
+    # Remove leading/trailing dashes
+    NAME="$(printf '%s' "$NAME" | sed 's/^-\+//; s/-\+$//')"
 fi
 
 # Construct filename

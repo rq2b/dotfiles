@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -eu
+
+mkdir -p build
+
+if [ "$#" -eq 0 ]; then
+    if [ ! -f main.cpp ]; then
+        echo "[xclang-sanitize] error: no input files; main.cpp not found"
+        exit 1
+    fi
+
+    set -- main.cpp
+fi
+
+echo "[xclang-sanitize] compiling: $*"
+echo "[xclang-sanitize] sanitizers: address,undefined"
+
+clang++ \
+    -std=c++23 \
+    -Wall \
+    -Wextra \
+    -Wpedantic \
+    -fcolor-diagnostics \
+    -fsanitize=address,undefined \
+    -g \
+    "$@" \
+    -o build/main
+
+echo "[xclang-sanitize] build succeeded"
+echo "[xclang-sanitize] running: ./build/main"
+
+./build/main

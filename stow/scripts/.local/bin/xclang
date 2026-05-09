@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+
+set -eu
+
+mkdir -p build
+
+if [ "$#" -eq 0 ]; then
+    if [ ! -f main.cpp ]; then
+        echo "[xclang] error: no input files; main.cpp not found"
+        exit 1
+    fi
+
+    set -- main.cpp
+fi
+
+echo "[xclang] compiling: $*"
+
+clang++ \
+    -std=c++23 \
+    -Wall \
+    -Wextra \
+    -Wpedantic \
+    -fcolor-diagnostics \
+    -g \
+    "$@" \
+    -o build/main
+
+echo "[xclang] build succeeded"
+echo "[xclang] running: ./build/main"
+
+./build/main

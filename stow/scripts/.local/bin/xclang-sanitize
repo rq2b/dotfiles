@@ -3,6 +3,7 @@
 set -eu
 
 mkdir -p build
+rm -f build/main
 
 if [ "$#" -eq 0 ]; then
     if [ ! -f main.cpp ]; then

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# metadata
+XMETA="list and describe personal x-prefixed tooling"
+
+if [[ "${1:-}" == "--meta" ]]; then
+    echo "$XMETA"
+    exit 0
+fi
+
+DOTFILES=(
+    "$HOME/dotfiles"
+    "$HOME/private-dotfiles"
+)
+
+show_help() {
+    cat <<EOF
+Usage:
+    xscripts
+    xscripts --paths
+    xscripts --meta
+
+Description:
+    Discover and describe personal x-prefixed tooling
+    from dotfiles repositories.
+EOF
+}
+
+case "${1:-}" in
+    -h|--help)
+        show_help
+        exit 0
+        ;;
+esac
+
+declare -a tools=()
+
+while IFS= read -r file; do
+    tools+=("$file")
+done < <(
+    find \
+        "${DOTFILES[@]}" \
+        -path '*/.local/bin/x*' \
+        -type f \
+        -executable \
+        | sort
+)
+
+if [[ "${1:-}" == "--paths" ]]; then
+    printf '%s\n' "${tools[@]}"
+    exit 0
+fi
+
+for tool in "${tools[@]}"; do
+    name="$(basename "$tool")"
+
+    if meta="$("$tool" --meta 2>/dev/null)"; then
+        :
+    else
+        meta="[no meta]"
+    fi
+
+    printf '%-24s %s\n' "$name" "$meta"
+done

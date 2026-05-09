@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 
+# metadata
+XMETA="archive stdin or clipboard into GPT context storage"
+
+if [[ "${1:-}" == "--meta" ]]; then
+    echo "$XMETA"
+    exit 0
+fi
+
 set -euo pipefail
 
 BASE="/home/staging/Syncthing/ITStep/Media/gpt-context"

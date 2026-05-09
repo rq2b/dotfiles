@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 
+# metadata
+XMETA="archive hometasks into lesson structure"
+
+if [[ "${1:-}" == "--meta" ]]; then
+    echo "$XMETA"
+    exit 0
+fi
+
 set -euo pipefail
 
 # config

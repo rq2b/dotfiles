@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# config
+LESSONS_DIR="$HOME/Syncthing/ITStep/Lessons"
+
+declare -A REPOS=(
+    [cpp]="$HOME/repos/cpp"
+)
+
+declare -A LESSON_TOPICS=(
+    [cpp]="C++"
+)
+
+# helpers
+die() {
+    echo "[xhometask] ERROR: $*" >&2
+    exit 1
+}
+
+confirm() {
+    read -rp "$1 [y/N]: " reply
+
+    [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+latest_lesson_dir() {
+    local repo="$1"
+    local topic="${LESSON_TOPICS[$repo]:-}"
+
+    [[ -n "$topic" ]] || die "missing lesson topic mapping for repo: $repo"
+
+    find "$LESSONS_DIR" \
+        -maxdepth 1 \
+        -type d \
+        -iname "*${topic}*" \
+        | sort \
+        | tail -n1
+}
+
+lesson_dir_by_number() {
+    local number="$1"
+
+    find "$LESSONS_DIR" \
+        -maxdepth 1 \
+        -type d \
+        -name "(${number})*" \
+        | head -n1
+}
+
+show_help() {
+    cat <<EOF
+xhometask - archive lesson hometasks from working repos
+
+USAGE:
+    xhometask <repo>
+    xhometask <repo> <lesson-number>
+
+EXAMPLES:
+    xhometask cpp
+    xhometask cpp 052
+EOF
+}
+
+# arguments
+if [[ $# -eq 0 ]]; then
+    show_help
+    exit 1
+fi
+
+case "${1:-}" in
+    -h|--help)
+        show_help
+        exit 0
+        ;;
+esac
+
+repo_name="$1"
+lesson_number="${2:-}"
+
+repo_path="${REPOS[$repo_name]:-}"
+
+[[ -n "$repo_path" ]] || die "unknown repo: $repo_name"
+[[ -d "$repo_path" ]] || die "repo path missing: $repo_path"
+
+# find lesson
+if [[ -n "$lesson_number" ]]; then
+    lesson_number="$(printf "%03d" "$lesson_number")"
+    lesson_dir="$(lesson_dir_by_number "$lesson_number")"
+else
+    lesson_dir="$(latest_lesson_dir "$repo_name")"
+fi
+
+[[ -n "${lesson_dir:-}" ]] || die "lesson directory not found"
+
+echo "[xhometask] lesson:"
+echo "  $lesson_dir"
+
+# hometask dir
+hometask_dir="$lesson_dir/hometask"
+
+if [[ ! -d "$lesson_dir" ]]; then
+    echo "[xhometask] WARNING:"
+    echo "lesson directory missing:"
+    echo "  $lesson_dir"
+
+    confirm "create it?" || exit 1
+
+    mkdir -p "$lesson_dir"
+fi
+
+if [[ ! -d "$hometask_dir" ]]; then
+    echo "[xhometask] creating:"
+    echo "  $hometask_dir"
+
+    mkdir -p "$hometask_dir"
+fi
+
+# git info
+git_branch="$(git -C "$repo_path" rev-parse --abbrev-ref HEAD)"
+git_commit="$(git -C "$repo_path" rev-parse --short HEAD)"
+git_message="$(git -C "$repo_path" log -1 --pretty=%s)"
+
+git_dirty="false"
+
+if [[ -n "$(git -C "$repo_path" status --porcelain)" ]]; then
+    git_dirty="true"
+
+    echo "[xhometask] WARNING:"
+    echo "repo contains uncommitted changes"
+
+    confirm "archive dirty state anyway?" || exit 1
+fi
+
+# dry run
+echo "[xhometask] dry run"
+echo
+
+rsync -avhn \
+    --delete \
+    --exclude '.git' \
+    --exclude 'build' \
+    --exclude '.vscode' \
+    --exclude '.idea' \
+    --exclude '*.o' \
+    --exclude '*.out' \
+    --exclude '.gitignore' \
+    "$repo_path/" \
+    "$hometask_dir/"
+
+echo "[xhometask] archive info"
+echo "  repo:    $repo_name"
+echo "  branch:  $git_branch"
+echo "  commit:  $git_commit"
+echo "  dirty:   $git_dirty"
+
+confirm "proceed with synchronization?" || exit 0
+
+# sync
+rsync -avh \
+    --delete \
+    --exclude '.git' \
+    --exclude 'build' \
+    --exclude '.vscode' \
+    --exclude '.idea' \
+    --exclude '*.o' \
+    --exclude '*.out' \
+    --exclude '.gitignore' \
+    "$repo_path/" \
+    "$hometask_dir/"
+
+# archive
+cat > "$hometask_dir/.archive-info" <<EOF
+repo=$repo_name
+branch=$git_branch
+commit=$git_commit
+dirty=$git_dirty
+date=$(date --iso-8601=seconds)
+message=$git_message
+EOF
+
+# done
+echo "[xhometask] synchronization complete"

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# metadata
+XMETA="launch per-monitor wallpapers through swaybg"
+
+if [[ "${1:-}" == "--meta" ]]; then
+    echo "$XMETA"
+    exit 0
+fi
+
+pkill -x swaybg || true
+
+uwsm-app -- swaybg \
+    -o DP-1 \
+    -i "$HOME/dotfiles/stow/wallpapers/.config/omarchy/backgrounds/hinterlands/horizontal-00.jpg" \
+    -m fill &
+
+uwsm-app -- swaybg \
+    -o HDMI-A-1 \
+    -i "$HOME/dotfiles/stow/wallpapers/.config/omarchy/backgrounds/hinterlands/vertical-11.jpg" \
+    -m fill &
+
+wait

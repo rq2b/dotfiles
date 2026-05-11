@@ -15,6 +15,7 @@ alias claer='clear'
 alias terminal-copy='kitty @ get-text --extent=all | wl-copy'
 alias striprefs="perl -0777 -i -pe 's/\s*:contentReference\[oaicite:\d+\]\{index=\d+\}//g'"
 alias ctx="xctx"
+alias ncat="xcat"
 
 download-opus() {
   yt-dlp -f "bestaudio[ext=webm]/bestaudio" \

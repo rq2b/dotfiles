@@ -15,14 +15,48 @@ usage() {
 Usage: xcat [options] <file/glob> [more files...]
 
 Options:
-  -r, --recursive        Recurse into directories
-  -d, --directory DIR    Resolve inputs relative to DIR instead of cwd
-  -h, --help             Show this help
+  -r, --recursive              Recurse into directories
+  -d, --directory DIR          Resolve inputs relative to DIR instead of cwd
+
+      --exclude-ext LIST       Exclude file extensions
+                                Example: --exclude-ext log,tmp,png
+
+      --include-ext LIST       Only include file extensions
+                                Example: --include-ext sh,py,lua
+
+      --exclude PATTERN        Exclude paths matching shell glob
+                                Example: --exclude '*/node_modules/*'
+
+  -h, --help                   Show this help
+
+Examples:
+  xcat *.sh
+
+  xcat -r src/
+
+  xcat -r --exclude-ext log,tmp .
+
+  xcat -r --include-ext sh,py,lua .
+
+  xcat -r \
+    --exclude '*.min.js' \
+    --exclude '*/node_modules/*' \
+    .
 EOF
 }
 
 recursive=false
 target_dir="."
+
+declare -a exclude_exts=()
+declare -a include_exts=()
+declare -a exclude_patterns=()
+
+parse_csv() {
+  local IFS=','
+  read -ra parts <<< "$1"
+  printf '%s\n' "${parts[@]}"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,28 +64,73 @@ while [[ $# -gt 0 ]]; do
       recursive=true
       shift
       ;;
+
     -d|--directory)
       if [[ $# -lt 2 ]]; then
         echo "Error: --directory requires a path" >&2
         usage
         exit 1
       fi
+
       target_dir="$2"
       shift 2
       ;;
+
+    --exclude-ext)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --exclude-ext requires a comma-separated list" >&2
+        usage
+        exit 1
+      fi
+
+      while IFS= read -r ext; do
+        exclude_exts+=("${ext#.}")
+      done < <(parse_csv "$2")
+
+      shift 2
+      ;;
+
+    --include-ext)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --include-ext requires a comma-separated list" >&2
+        usage
+        exit 1
+      fi
+
+      while IFS= read -r ext; do
+        include_exts+=("${ext#.}")
+      done < <(parse_csv "$2")
+
+      shift 2
+      ;;
+
+    --exclude)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --exclude requires a glob pattern" >&2
+        usage
+        exit 1
+      fi
+
+      exclude_patterns+=("$2")
+      shift 2
+      ;;
+
     -h|--help)
       usage
       exit 0
       ;;
+
     --)
       shift
       break
       ;;
+
     -*)
       echo "Error: unknown option: $1" >&2
       usage
       exit 1
       ;;
+
     *)
       break
       ;;
@@ -63,11 +142,64 @@ if [[ ! -d "$target_dir" ]]; then
   exit 1
 fi
 
+should_include() {
+  local f="$1"
+  local base ext
+
+  base="$(basename -- "$f")"
+
+  if [[ "$base" == *.* ]]; then
+    ext="${base##*.}"
+  else
+    ext=""
+  fi
+
+  # include-ext filter
+  if ((${#include_exts[@]})); then
+    local matched=false
+
+    for e in "${include_exts[@]}"; do
+      if [[ "$ext" == "$e" ]]; then
+        matched=true
+        break
+      fi
+    done
+
+    $matched || return 1
+  fi
+
+  # exclude-ext filter
+  for e in "${exclude_exts[@]}"; do
+    if [[ "$ext" == "$e" ]]; then
+      return 1
+    fi
+  done
+
+  # exclude path glob patterns
+  for p in "${exclude_patterns[@]}"; do
+    if [[ "$f" == $p ]]; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+add_file() {
+  local f="$1"
+
+  should_include "$f" || return 0
+  files+=("$f")
+}
+
 declare -a files=()
 
 if $recursive; then
   if (( $# == 0 )); then
-    mapfile -t files < <(find "$target_dir" -type f | sort)
+    while IFS= read -r f; do
+      add_file "$f"
+    done < <(find "$target_dir" -type f | sort)
+
   else
     for arg in "$@"; do
       if [[ "$arg" = /* ]]; then
@@ -78,27 +210,30 @@ if $recursive; then
 
       if [[ -d "$path" ]]; then
         while IFS= read -r f; do
-          files+=("$f")
+          add_file "$f"
         done < <(find "$path" -type f | sort)
+
         continue
       fi
 
       matches=( $path )
+
       if ((${#matches[@]})); then
         for match in "${matches[@]}"; do
           if [[ -d "$match" ]]; then
             while IFS= read -r f; do
-              files+=("$f")
+              add_file "$f"
             done < <(find "$match" -type f | sort)
           else
-            files+=("$match")
+            add_file "$match"
           fi
         done
       else
-        files+=("$path")
+        add_file "$path"
       fi
     done
   fi
+
 else
   if (( $# == 0 )); then
     echo "Error: no input files provided" >&2
@@ -112,12 +247,15 @@ else
     else
       path="$target_dir/$arg"
     fi
+
     matches=( $path )
 
     if ((${#matches[@]})); then
-      files+=("${matches[@]}")
+      for match in "${matches[@]}"; do
+        add_file "$match"
+      done
     else
-      files+=("$path")
+      add_file "$path"
     fi
   done
 fi
@@ -127,17 +265,12 @@ declare -a uniq_files=()
 
 for f in "${files[@]}"; do
   [[ -n "${seen["$f"]+x}" ]] && continue
+
   seen["$f"]=1
   uniq_files+=("$f")
 done
 
 for f in "${uniq_files[@]}"; do
-  # if [[ ! -f "$f" ]]; then
-    # printf '###### %s ######\n' "$(realpath -m -- "$f")"
-    # printf '[skipped: not a regular file]\n\n'
-    # continue
-  # fi
-
   printf '###### %s ######\n\n' "$(realpath -- "$f")"
   cat -- "$f"
   printf '\n\n'

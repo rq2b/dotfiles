@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT="$HOME/Scripts/monkeytype/monkeytype-summary.py"
+
+META="summarise Monkeytype CSV exports by test type"
+
+help() {
+cat <<EOF
+xmonkey — wrapper for monkeytype-summary.py
+
+Usage:
+  xmonkey [csv]
+  xmonkey [options]
+  xmonkey --meta
+  xmonkey --help
+
+Description:
+  Summarises Monkeytype CSV exports by test type.
+
+Behavior:
+  - If no CSV is provided, the underlying script auto-selects
+    the newest CSV from ~/Downloads.
+  - All non-wrapper arguments are forwarded directly to:
+      $SCRIPT
+
+Forwarded options:
+  --runs N
+      Limit output to the last N batches.
+
+  --gap-hours HOURS
+      Silence gap that starts a new batch/session.
+
+  --drill-cycle-size N
+      Number of 30-second drill slots per cycle.
+
+  --no-changes
+      Skip batch-to-batch change tables.
+
+Wrapper options:
+  --meta
+      Print short metadata description and exit.
+
+  --help
+      Show this help message and exit.
+EOF
+}
+
+if [[ $# -eq 1 ]]; then
+    case "$1" in
+        --meta)
+            echo "$META"
+            exit 0
+            ;;
+        --help|-h)
+            help
+            exit 0
+            ;;
+    esac
+fi
+
+if [[ ! -f "$SCRIPT" ]]; then
+    echo "xmonkey: script not found: $SCRIPT" >&2
+    exit 1
+fi
+
+exec "$SCRIPT" "$@"

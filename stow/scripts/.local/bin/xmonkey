@@ -13,6 +13,7 @@ xmonkey — wrapper for monkeytype-summary.py
 Usage:
   xmonkey [csv]
   xmonkey [options]
+  xmonkey --add-override
   xmonkey --meta
   xmonkey --help
 
@@ -37,6 +38,10 @@ Forwarded options:
 
   --no-changes
       Skip batch-to-batch change tables.
+
+  --add-override
+      Adds override rows to override.csv to 
+      compensate for monkeytype refusing to save results.
 
 Wrapper options:
   --meta

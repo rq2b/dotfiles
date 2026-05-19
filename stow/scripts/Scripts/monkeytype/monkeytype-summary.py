@@ -40,15 +40,14 @@ FIXED_TESTS: OrderedDict[int, str] = OrderedDict([
     (628,  "Cpp"),
     (383,  "Python"),
     (400,  "CS"),
-    (85,   "VIM"),
-    (91,   "REGEX"),
-    (131,  "linux"),
-    (110,  "symbols"),
-    # ---- v2 snippets (update keys once you have real char counts) ----------
-    (-1,   "VIM-v2"),
-    (-2,   "REGEX-v2"),
-    (-3,   "linux-v2"),
-    (-4,   "symbols-v2"),
+    # (85,   "VIM"),
+    # (91,   "REGEX"),
+    # (131,  "linux"),
+    # (110,  "symbols"),
+    (177,   "VIM-v2"),
+    (304,   "REGEX-v2"),
+    (482,   "linux-v2"),
+    (334,   "symbols-v2"),
 ])
 
 # Sequence that names 30-second drill slots within a batch, in order.

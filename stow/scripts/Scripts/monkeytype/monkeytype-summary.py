@@ -8,18 +8,26 @@ Drop in ~/bin (or anywhere on $PATH), chmod +x, then run:
     monkeytype.py --runs 3         # last 3 batches only
     monkeytype.py --add-override   # interactively record a result that
                                    # Monkeytype refused to save
+    monkeytype.py --json           # emit machine-readable JSON
 """
 
 import argparse
 import glob
+import json
+import math
 import os
 import secrets
 import sys
 from collections import OrderedDict
 from datetime import datetime
+from typing import Any
 
+import numpy as np
 import pandas as pd
 
+
+SCRIPT_VERSION = "2.0-json"
+SCHEMA_VERSION = "2.0"
 
 # ---------------------------------------------------------------------------
 # Test catalogue
@@ -48,6 +56,8 @@ FIXED_TESTS: OrderedDict[int, str] = OrderedDict([
     (304,   "REGEX-v2"),
     (482,   "linux-v2"),
     (334,   "symbols-v2"),
+    (476,   "git-l1-1"),
+    (499,   "git-l1-2"),
 ])
 
 # Sequence that names 30-second drill slots within a batch, in order.
@@ -89,6 +99,121 @@ CSV_COLUMNS = [
     "punctuation", "numbers", "language", "funbox", "difficulty",
     "lazyMode", "blindMode", "bailedOut", "tags", "timestamp",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _is_missing(value: Any) -> bool:
+    try:
+        return bool(pd.isna(value))
+    except Exception:
+        return False
+
+
+def _json_scalar(value: Any, ndigits: int = 2) -> Any:
+    """Convert pandas / numpy scalars into JSON-safe Python types."""
+    if value is None:
+        return None
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.isoformat()
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, (bool,)):
+        return value
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (int,)):
+        return value
+    if isinstance(value, (np.floating, float)):
+        if math.isnan(float(value)):
+            return None
+        return round(float(value), ndigits)
+    if _is_missing(value):
+        return None
+    return value
+
+
+def _jsonify(value: Any, ndigits: int = 2) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _jsonify(v, ndigits=ndigits) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_jsonify(v, ndigits=ndigits) for v in value]
+    if isinstance(value, tuple):
+        return [_jsonify(v, ndigits=ndigits) for v in value]
+    return _json_scalar(value, ndigits=ndigits)
+
+
+def _round_series(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in cols:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(2)
+    return out
+
+
+def _round_value(value: Any, ndigits: int = 2) -> Any:
+    if _is_missing(value):
+        return None
+    if isinstance(value, (np.integer, int, bool, np.bool_)):
+        return int(value) if not isinstance(value, (bool, np.bool_)) else bool(value)
+    if isinstance(value, (np.floating, float)):
+        return round(float(value), ndigits)
+    return value
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if _is_missing(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _num_or_none(value: Any, ndigits: int = 2) -> float | int | None:
+    if _is_missing(value):
+        return None
+    if isinstance(value, (np.integer, int)) and not isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return round(float(value), ndigits)
+    try:
+        return round(float(value), ndigits)
+    except Exception:
+        return None
+
+
+def _source_breakdown(df: pd.DataFrame) -> dict[str, int]:
+    counts = df["source"].value_counts(dropna=False).to_dict() if "source" in df else {}
+    return {str(k): int(v) for k, v in counts.items()}
+
+
+def _weighted_mean(values: pd.Series, weights: pd.Series) -> float | None:
+    values = pd.to_numeric(values, errors="coerce")
+    weights = pd.to_numeric(weights, errors="coerce")
+    mask = values.notna() & weights.notna()
+    if not mask.any():
+        return None
+    total = weights[mask].sum()
+    if total == 0:
+        return None
+    return float((values[mask] * weights[mask]).sum() / total)
+
+
+def _safe_max(records: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
+    best = None
+    best_val = None
+    for record in records:
+        val = record.get(key)
+        if val is None:
+            continue
+        if best is None or val > best_val:
+            best = record
+            best_val = val
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +264,11 @@ def parse_args() -> argparse.Namespace:
             "and append it to ~/Downloads/overrides.csv."
         ),
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of the terminal report.",
+    )
     return parser.parse_args()
 
 
@@ -146,7 +276,7 @@ def parse_args() -> argparse.Namespace:
 # CSV auto-discovery
 # ---------------------------------------------------------------------------
 
-def find_latest_csv() -> str:
+def find_latest_csv(quiet: bool = False) -> str:
     """Return the newest .csv in ~/Downloads (excluding overrides.csv)."""
     downloads = os.path.expanduser("~/Downloads")
     candidates = glob.glob(os.path.join(downloads, "*.csv"))
@@ -161,7 +291,8 @@ def find_latest_csv() -> str:
             "or pass a path explicitly."
         )
     newest = max(candidates, key=os.path.getmtime)
-    print(f"Auto-selected: {newest}\n")
+    if not quiet:
+        print(f"Auto-selected: {newest}\n")
     return newest
 
 
@@ -173,8 +304,8 @@ def _ask(prompt: str, default: str = "", validator=None) -> str:
     """Prompt, use default on bare Enter, re-prompt if validator fails."""
     while True:
         suffix = f" (default: {default}): " if default != "" else ": "
-        raw    = input(prompt + suffix).strip()
-        value  = raw if raw != "" else default
+        raw = input(prompt + suffix).strip()
+        value = raw if raw != "" else default
         if validator is None or validator(value):
             return value
 
@@ -213,10 +344,10 @@ def _fake_id() -> str:
 def add_override() -> None:
     """
     Collect one unsaved test result interactively and append it to
-    overrides.csv.  All fields not asked are hardcoded to standard
+    overrides.csv. All fields not asked are hardcoded to standard
     custom-test defaults so the row parses identically to real exports.
     """
-    now    = datetime.now()
+    now = datetime.now()
     active = {k: v for k, v in FIXED_TESTS.items() if k > 0}
 
     print()
@@ -225,11 +356,11 @@ def add_override() -> None:
     print("─" * 52)
 
     # ── metrics ─────────────────────────────────────────────────────────────
-    wpm         = _ask_float("wpm")
-    acc         = _ask_float("accuracy")
-    raw_wpm     = _ask_float("raw wpm")
+    wpm = _ask_float("wpm")
+    acc = _ask_float("accuracy")
+    raw_wpm = _ask_float("raw wpm")
     consistency = _ask_float("consistency")
-    duration    = _ask_float("time (seconds)")
+    duration = _ask_float("time (seconds)")
 
     # ── char count with hint table ───────────────────────────────────────────
     print()
@@ -259,11 +390,11 @@ def add_override() -> None:
 
     # ── date / time ─────────────────────────────────────────────────────────
     print()
-    year   = _ask_int("year",   default=str(now.year))
-    month  = _ask_int("month",  default=str(now.month),  choices=list(range(1,  13)))
-    day    = _ask_int("day",    default=str(now.day),    choices=list(range(1,  32)))
-    hour   = _ask_int("hour",   default=str(now.hour),   choices=list(range(0,  24)))
-    minute = _ask_int("minute", default=str(now.minute), choices=list(range(0,  60)))
+    year = _ask_int("year", default=str(now.year))
+    month = _ask_int("month", default=str(now.month), choices=list(range(1, 13)))
+    day = _ask_int("day", default=str(now.day), choices=list(range(1, 32)))
+    hour = _ask_int("hour", default=str(now.hour), choices=list(range(0, 24)))
+    minute = _ask_int("minute", default=str(now.minute), choices=list(range(0, 60)))
 
     try:
         dt = datetime(year, month, day, hour, minute, 0)
@@ -272,39 +403,39 @@ def add_override() -> None:
 
     timestamp_ms = int(dt.timestamp() * 1000)
 
-    # ── assemble row ─────────────────────────────────────────────────────────
+    # ── assemble row ────────────────────────────────────────────────────────
     # charStats: "correct;incorrect;extra;missed"
     # Screenshots only show the total count (e.g. 252/0/0/0).
     # We fill incorrect/extra/missed as 0; they don't affect test identification.
     row = {
-        "_id":                   _fake_id(),
-        "isPb":                  False,
-        "wpm":                   wpm,
-        "acc":                   acc,
-        "rawWpm":                raw_wpm,
-        "consistency":           consistency,
-        "charStats":             f"{chars};0;0;0",
-        "mode":                  "custom",
-        "mode2":                 "custom",
-        "quoteLength":           -1,
-        "restartCount":          0,
-        "testDuration":          duration,
-        "afkDuration":           0,
+        "_id": _fake_id(),
+        "isPb": False,
+        "wpm": wpm,
+        "acc": acc,
+        "rawWpm": raw_wpm,
+        "consistency": consistency,
+        "charStats": f"{chars};0;0;0",
+        "mode": "custom",
+        "mode2": "custom",
+        "quoteLength": -1,
+        "restartCount": 0,
+        "testDuration": duration,
+        "afkDuration": 0,
         "incompleteTestSeconds": 0.0,
-        "punctuation":           False,
-        "numbers":               False,
-        "language":              "english",
-        "funbox":                float("nan"),
-        "difficulty":            "normal",
-        "lazyMode":              False,
-        "blindMode":             False,
-        "bailedOut":             False,
-        "tags":                  float("nan"),
-        "timestamp":             timestamp_ms,
+        "punctuation": False,
+        "numbers": False,
+        "language": "english",
+        "funbox": float("nan"),
+        "difficulty": "normal",
+        "lazyMode": False,
+        "blindMode": False,
+        "bailedOut": False,
+        "tags": float("nan"),
+        "timestamp": timestamp_ms,
     }
 
     # ── write ────────────────────────────────────────────────────────────────
-    new_df      = pd.DataFrame([row], columns=CSV_COLUMNS)
+    new_df = pd.DataFrame([row], columns=CSV_COLUMNS)
     file_exists = os.path.isfile(OVERRIDE_PATH)
     new_df.to_csv(
         OVERRIDE_PATH,
@@ -326,21 +457,22 @@ def add_override() -> None:
 
 def _parse_df(df: pd.DataFrame) -> pd.DataFrame:
     """Post-load parsing shared by the main CSV and overrides."""
+    df = df.copy()
     ts_max = pd.to_numeric(df["timestamp"], errors="coerce").max()
     if pd.isna(ts_max):
         sys.exit("Could not parse the timestamp column.")
-    unit   = "ms" if ts_max > 10_000_000_000 else "s"
+    unit = "ms" if ts_max > 10_000_000_000 else "s"
     df["dt"] = pd.to_datetime(df["timestamp"], unit=unit, errors="coerce")
     df = df.dropna(subset=["dt"]).sort_values("dt").reset_index(drop=True)
 
     cs = df["charStats"].astype(str).str.split(";", expand=True).astype(int)
-    cs.columns        = ["correct", "incorrect", "extra", "missed"]
-    df["correct"]     = cs["correct"]
-    df["incorrect"]   = cs["incorrect"]
-    df["extra"]       = cs["extra"]
-    df["missed"]      = cs["missed"]
-    df["total_chars"] = cs.sum(axis=1)
-    df["errors"]      = cs["incorrect"] + cs["missed"]
+    cs.columns = ["correct", "incorrect", "extra", "missed"]
+    df["correct"] = cs["correct"]
+    df["incorrect"] = cs["incorrect"]
+    df["extra"] = cs["extra"]
+    df["missed"] = cs["missed"]
+    df["total_chars"] = cs["correct"]
+    df["errors"] = cs["incorrect"] + cs["missed"]
 
     for col in ("wpm", "rawWpm", "acc", "consistency", "testDuration"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -355,16 +487,18 @@ def _parse_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_data(csv_path: str) -> pd.DataFrame:
-    """Load main CSV, merge overrides if present, parse, return combined df."""
+def load_data(csv_path: str, quiet: bool = False) -> tuple[pd.DataFrame, int]:
+    """Load main CSV, merge overrides if present, parse, and return combined df."""
     df = pd.read_csv(csv_path)
+    df["source"] = "monkeytype"
 
     required = {"timestamp", "charStats", "wpm", "rawWpm",
                 "acc", "consistency", "testDuration", "isPb"}
-    missing  = required - set(df.columns)
+    missing = required - set(df.columns)
     if missing:
         sys.exit(f"CSV is missing required columns: {', '.join(sorted(missing))}")
 
+    override_count = 0
     if os.path.isfile(OVERRIDE_PATH):
         try:
             overrides = pd.read_csv(OVERRIDE_PATH)
@@ -377,13 +511,17 @@ def load_data(csv_path: str) -> pd.DataFrame:
                         file=sys.stderr,
                     )
                 else:
+                    overrides = overrides.copy()
+                    overrides["source"] = "override"
+                    override_count = len(overrides)
                     df = pd.concat([df, overrides], ignore_index=True)
-                    print(f"Merged {len(overrides)} override row(s) "
-                          f"from {OVERRIDE_PATH}")
+                    if not quiet:
+                        print(f"Merged {len(overrides)} override row(s) "
+                              f"from {OVERRIDE_PATH}")
         except Exception as exc:
             print(f"  ⚠  Could not read overrides.csv: {exc}", file=sys.stderr)
 
-    return _parse_df(df)
+    return _parse_df(df), override_count
 
 
 # ---------------------------------------------------------------------------
@@ -391,11 +529,11 @@ def load_data(csv_path: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def build_batches(df: pd.DataFrame, gap_hours: float) -> pd.DataFrame:
-    gap        = pd.Timedelta(hours=gap_hours)
-    df         = df.copy()
-    df["delta"]    = df["dt"].diff()
+    gap = pd.Timedelta(hours=gap_hours)
+    df = df.copy()
+    df["delta"] = df["dt"].diff()
     df["batch_id"] = (df["delta"].isna() | (df["delta"] > gap)).cumsum()
-    batch_names    = (
+    batch_names = (
         df.groupby("batch_id")["dt"]
         .min()
         .dt.strftime("%Y-%m-%d %H:%M")
@@ -417,25 +555,25 @@ def _is_fixed(total: int) -> bool:
 
 def assign_test_names(df: pd.DataFrame, drill_cycle_size: int) -> pd.DataFrame:
     df = df.copy()
-    df["test_type"]        = "other"
-    df["test_name"]        = None
-    df["test_key"]         = None
+    df["test_type"] = "other"
+    df["test_name"] = None
+    df["test_key"] = None
     df["attempt_in_batch"] = 0
-    df["sort_order"]       = 0
+    df["sort_order"] = 0
 
     fixed_order = {total: idx for idx, total in enumerate(_ACTIVE_FIXED)}
 
     for batch_id, batch_idx in df.groupby("batch_id").groups.items():
-        idx   = list(batch_idx)
+        idx = list(batch_idx)
         batch = df.loc[idx].sort_values("dt")
 
         fixed_mask = batch["total_chars"].apply(_is_fixed)
         for row_idx in batch[fixed_mask].index:
             total = int(df.at[row_idx, "total_chars"])
-            name  = _ACTIVE_FIXED[total]
-            df.at[row_idx, "test_type"]  = "fixed"
-            df.at[row_idx, "test_name"]  = name
-            df.at[row_idx, "test_key"]   = f"fixed:{total}:{name}"
+            name = _ACTIVE_FIXED[total]
+            df.at[row_idx, "test_type"] = "fixed"
+            df.at[row_idx, "test_name"] = name
+            df.at[row_idx, "test_key"] = f"fixed:{total}:{name}"
             df.at[row_idx, "sort_order"] = fixed_order[total]
 
         drill_rows = batch[
@@ -444,26 +582,24 @@ def assign_test_names(df: pd.DataFrame, drill_cycle_size: int) -> pd.DataFrame:
         ].sort_values("dt")
 
         for pos, row_idx in enumerate(drill_rows.index):
-            cycle     = pos // drill_cycle_size + 1
-            slot      = pos % drill_cycle_size
+            cycle = pos // drill_cycle_size + 1
+            slot = pos % drill_cycle_size
             base_name = DRILL_SEQUENCE[slot]
-            name      = base_name if cycle == 1 else f"{base_name} #{cycle}"
-            df.at[row_idx, "test_type"]  = "drill"
-            df.at[row_idx, "test_name"]  = name
-            df.at[row_idx, "test_key"]   = f"drill:{slot}:{cycle}:{base_name}"
-            df.at[row_idx, "sort_order"] = (
-                100 + (cycle - 1) * drill_cycle_size + slot
-            )
+            name = base_name if cycle == 1 else f"{base_name} #{cycle}"
+            df.at[row_idx, "test_type"] = "drill"
+            df.at[row_idx, "test_name"] = name
+            df.at[row_idx, "test_key"] = f"drill:{slot}:{cycle}:{base_name}"
+            df.at[row_idx, "sort_order"] = 100 + (cycle - 1) * drill_cycle_size + slot
 
         unknown = batch[df.loc[idx, "test_name"].isna()]
         for row_idx in unknown.index:
-            total    = int(df.at[row_idx, "total_chars"])
-            dur      = df.at[row_idx, "testDuration"]
+            total = int(df.at[row_idx, "total_chars"])
+            dur = df.at[row_idx, "testDuration"]
             dur_text = "na" if pd.isna(dur) else f"{dur:.2f}"
-            name     = f"unknown_{total}_{dur_text}"
-            df.at[row_idx, "test_type"]  = "other"
-            df.at[row_idx, "test_name"]  = name
-            df.at[row_idx, "test_key"]   = f"other:{total}:{dur_text}"
+            name = f"unknown_{total}_{dur_text}"
+            df.at[row_idx, "test_type"] = "other"
+            df.at[row_idx, "test_name"] = name
+            df.at[row_idx, "test_key"] = f"other:{total}:{dur_text}"
             df.at[row_idx, "sort_order"] = 1000 + total
 
         df.loc[batch.index, "attempt_in_batch"] = range(1, len(batch) + 1)
@@ -472,7 +608,314 @@ def assign_test_names(df: pd.DataFrame, drill_cycle_size: int) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# JSON export construction
+# ---------------------------------------------------------------------------
+
+def _make_attempt_record(row: pd.Series) -> dict[str, Any]:
+    return {
+        "attempt_id": _json_scalar(row.get("_id")),
+        "source": _json_scalar(row.get("source")),
+        "session_id": _json_scalar(row.get("batch_id")),
+        "session_label": _json_scalar(row.get("batch")),
+        "session_started_at": _iso_or_none(row.get("batch_start")),
+        "session_datetime": _iso_or_none(row.get("dt")),
+        "attempt_in_session": _json_scalar(row.get("attempt_in_batch")),
+        "test_type": _json_scalar(row.get("test_type")),
+        "test_name": _json_scalar(row.get("test_name")),
+        "test_key": _json_scalar(row.get("test_key")),
+        "sort_order": _json_scalar(row.get("sort_order")),
+        "mode": _json_scalar(row.get("mode")),
+        "mode2": _json_scalar(row.get("mode2")),
+        "test_duration": _num_or_none(row.get("testDuration")),
+        "wpm": _num_or_none(row.get("wpm")),
+        "raw_wpm": _num_or_none(row.get("rawWpm")),
+        "acc": _num_or_none(row.get("acc")),
+        "consistency": _num_or_none(row.get("consistency")),
+        "is_pb": bool(row.get("isPb")) if not _is_missing(row.get("isPb")) else None,
+        "pb_flag": _json_scalar(row.get("pb")),
+        "total_chars": _json_scalar(row.get("total_chars")),
+        "correct": _json_scalar(row.get("correct")),
+        "incorrect": _json_scalar(row.get("incorrect")),
+        "extra": _json_scalar(row.get("extra")),
+        "missed": _json_scalar(row.get("missed")),
+        "errors": _json_scalar(row.get("errors")),
+        "char_stats": _json_scalar(row.get("charStats")),
+        "punctuation": bool(row.get("punctuation")) if not _is_missing(row.get("punctuation")) else None,
+        "numbers": bool(row.get("numbers")) if not _is_missing(row.get("numbers")) else None,
+        "language": _json_scalar(row.get("language")),
+        "difficulty": _json_scalar(row.get("difficulty")),
+        "lazy_mode": bool(row.get("lazyMode")) if not _is_missing(row.get("lazyMode")) else None,
+        "blind_mode": bool(row.get("blindMode")) if not _is_missing(row.get("blindMode")) else None,
+        "bailed_out": bool(row.get("bailedOut")) if not _is_missing(row.get("bailedOut")) else None,
+        "quote_length": _json_scalar(row.get("quoteLength")),
+        "restart_count": _json_scalar(row.get("restartCount")),
+        "afk_duration": _num_or_none(row.get("afkDuration")),
+        "incomplete_test_seconds": _num_or_none(row.get("incompleteTestSeconds")),
+        "timestamp_ms": _json_scalar(row.get("timestamp")),
+    }
+
+
+def _compute_session_summary(session_rows: pd.DataFrame) -> dict[str, Any]:
+    named = session_rows[session_rows["test_name"].notna()].copy()
+    if named.empty:
+        return {
+            "named_test_count": 0,
+            "drill_count": int((session_rows["test_type"] == "drill").sum()),
+            "attempt_count": int(len(session_rows)),
+            "source_breakdown": _source_breakdown(session_rows),
+        }
+
+    return {
+        "named_test_count": int((session_rows["test_type"] != "drill").sum()),
+        "drill_count": int((session_rows["test_type"] == "drill").sum()),
+        "attempt_count": int(len(session_rows)),
+        "source_breakdown": _source_breakdown(session_rows),
+        "wpm_mean": _num_or_none(named["wpm"].mean()),
+        "raw_wpm_mean": _num_or_none(named["rawWpm"].mean()),
+        "acc_mean": _num_or_none(named["acc"].mean()),
+        "consistency_mean": _num_or_none(named["consistency"].mean()),
+    }
+
+
+def _build_test_entry(record: dict[str, Any], previous: dict[str, Any] | None = None) -> dict[str, Any]:
+    entry = {
+        "session_id": record["session_id"],
+        "session_label": record["session_label"],
+        "session_datetime": record["session_datetime"],
+        "session_started_at": record["session_started_at"],
+        "attempt_in_session": record["attempt_in_session"],
+        "test_key": record["test_key"],
+        "test_type": record["test_type"],
+        "source": record["source"],
+        "wpm": record["wpm"],
+        "raw_wpm": record["raw_wpm"],
+        "acc": record["acc"],
+        "consistency": record["consistency"],
+        "test_duration": record["test_duration"],
+        "total_chars": record["total_chars"],
+        "correct": record["correct"],
+        "errors": record["errors"],
+        "pb_flag": record["pb_flag"],
+        "timestamp_ms": record["timestamp_ms"],
+    }
+    if previous is None:
+        entry.update({
+            "wpm_delta": None,
+            "raw_wpm_delta": None,
+            "acc_delta": None,
+            "consistency_delta": None,
+            "test_duration_delta": None,
+        })
+    else:
+        entry.update({
+            "wpm_delta": _num_or_none(record["wpm"] - previous["wpm"]) if record["wpm"] is not None and previous["wpm"] is not None else None,
+            "raw_wpm_delta": _num_or_none(record["raw_wpm"] - previous["raw_wpm"]) if record["raw_wpm"] is not None and previous["raw_wpm"] is not None else None,
+            "acc_delta": _num_or_none(record["acc"] - previous["acc"]) if record["acc"] is not None and previous["acc"] is not None else None,
+            "consistency_delta": _num_or_none(record["consistency"] - previous["consistency"]) if record["consistency"] is not None and previous["consistency"] is not None else None,
+            "test_duration_delta": _num_or_none(record["test_duration"] - previous["test_duration"]) if record["test_duration"] is not None and previous["test_duration"] is not None else None,
+        })
+    return entry
+
+
+def _build_trend(history: list[dict[str, Any]]) -> dict[str, Any]:
+    wpm_values = [h["wpm"] for h in history if h.get("wpm") is not None]
+    if not wpm_values:
+        return {
+            "latest_wpm": None,
+            "best_wpm": None,
+            "last_3_avg_wpm": None,
+            "last_5_avg_wpm": None,
+            "improvement_since_first": None,
+        }
+
+    latest = wpm_values[-1]
+    first = wpm_values[0]
+    last_3 = wpm_values[-3:]
+    last_5 = wpm_values[-5:]
+    return {
+        "latest_wpm": _num_or_none(latest),
+        "best_wpm": _num_or_none(max(wpm_values)),
+        "last_3_avg_wpm": _num_or_none(sum(last_3) / len(last_3)),
+        "last_5_avg_wpm": _num_or_none(sum(last_5) / len(last_5)),
+        "improvement_since_first": _num_or_none(latest - first),
+    }
+
+
+def _build_personal_best(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    valid = [h for h in history if h.get("wpm") is not None]
+    if not valid:
+        return None
+    best = max(valid, key=lambda h: (h["wpm"], h.get("acc") or -1, h.get("consistency") or -1))
+    return {
+        "wpm": _num_or_none(best.get("wpm")),
+        "acc": _num_or_none(best.get("acc")),
+        "consistency": _num_or_none(best.get("consistency")),
+        "achieved_in_session": best.get("session_label"),
+        "achieved_at": best.get("session_datetime"),
+        "test_key": best.get("test_key"),
+        "source": best.get("source"),
+        "timestamp_ms": best.get("timestamp_ms"),
+    }
+
+
+
+def build_json_export(
+    df: pd.DataFrame,
+    batches: list[str],
+    csv_path: str,
+    override_path: str,
+    override_count: int,
+    gap_hours: float,
+    drill_cycle_size: int,
+) -> dict[str, Any]:
+    selected = df[df["batch"].isin(batches)].copy()
+
+    # Build one canonical record per attempt, in chronological order.
+    selected_sorted = selected.sort_values(["dt", "batch_id", "attempt_in_batch"]).copy()
+    record_map: dict[int, dict[str, Any]] = {}
+    test_history: dict[str, dict[str, Any]] = {}
+    previous_global: dict[str, dict[str, Any]] = {}
+
+    for row_idx, row in selected_sorted.iterrows():
+        record = _make_attempt_record(row)
+        record_map[int(row_idx)] = record
+
+        history_key = record["test_name"] or record["test_key"] or "unknown"
+        history_root = test_history.setdefault(
+            history_key,
+            {
+                "test_name": record["test_name"],
+                "test_key": record["test_key"],
+                "test_type": record["test_type"],
+                "history": [],
+                "personal_best": None,
+                "trend": None,
+                "source_breakdown": {},
+            },
+        )
+        prev = previous_global.get(history_key)
+        history_entry = _build_test_entry(record, previous=prev)
+        history_root["history"].append(history_entry)
+        previous_global[history_key] = record
+
+    sessions: list[dict[str, Any]] = []
+    for batch_id, batch_df in selected.groupby("batch_id", sort=True):
+        batch_df = batch_df.sort_values("dt").copy()
+        session_label = batch_df["batch"].iloc[0]
+        session_start = batch_df["dt"].min()
+        session_end = batch_df["dt"].max()
+        session_obj = {
+            "session_id": _json_scalar(batch_id),
+            "batch_label": session_label,
+            "batch_started_at": _iso_or_none(session_start),
+            "batch_ended_at": _iso_or_none(session_end),
+            "attempt_count": int(len(batch_df)),
+            "summary": _compute_session_summary(batch_df),
+            "tests": {},
+            "drills": [],
+            "attempts": [],
+        }
+        for row_idx, row in batch_df.iterrows():
+            record = record_map[int(row_idx)]
+            session_obj["attempts"].append(record)
+            if record["test_type"] == "drill":
+                session_obj["drills"].append(record)
+            elif record["test_name"]:
+                session_obj["tests"][record["test_name"]] = record
+        sessions.append(_jsonify(session_obj))
+
+    batch_summary_rows = [_jsonify(row) for row in _build_batch_summary_rows(selected)]
+
+    for payload in test_history.values():
+        history = payload["history"]
+        payload["personal_best"] = _build_personal_best(history)
+        payload["trend"] = _build_trend(history)
+        payload["source_breakdown"] = _source_breakdown(
+            pd.DataFrame(history) if history else pd.DataFrame(columns=["source"])
+        )
+        payload["history"] = [_jsonify(item) for item in history]
+
+    meta = {
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "script_version": SCRIPT_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "csv_path": csv_path,
+        "override_path": override_path,
+        "override_count": int(override_count),
+        "gap_hours": _num_or_none(gap_hours),
+        "drill_cycle_size": int(drill_cycle_size),
+        "total_rows": int(len(df)),
+        "selected_rows": int(len(selected)),
+        "selected_session_count": int(len(sessions)),
+        "all_session_count": int(df["batch_id"].nunique()),
+        "selected_batches": list(batches),
+        "selected_batch_count": int(len(batches)),
+        "total_tests_tracked": int(len(test_history)),
+    }
+
+    return {
+        "meta": meta,
+        "sessions": sessions,
+        "batch_summary": batch_summary_rows,
+        "test_history": _jsonify(test_history),
+    }
+
+
+def _build_batch_summary_rows(batch_df: pd.DataFrame) -> list[dict[str, Any]]:
+    summary = (
+        batch_df.groupby(["batch", "test_name"], as_index=False)
+        .agg(
+            session_id=("batch_id", "first"),
+            session_started_at=("dt", "min"),
+            session_ended_at=("dt", "max"),
+            test_type=("test_type", "first"),
+            test_key=("test_key", "first"),
+            sort_order=("sort_order", "min"),
+            samples=("test_name", "size"),
+            total_chars=("total_chars", "first"),
+            correct=("correct", "mean"),
+            errors=("errors", "mean"),
+            dur_avg=("testDuration", "mean"),
+            wpm=("wpm", "mean"),
+            rawWpm=("rawWpm", "mean"),
+            acc=("acc", "mean"),
+            consistency=("consistency", "mean"),
+            pb_count=("pb", lambda s: (s == "*").sum()),
+            source_breakdown=("source", lambda s: _source_breakdown(pd.DataFrame({"source": s}))),
+        )
+        .sort_values(["batch", "sort_order", "test_name"])
+        .reset_index(drop=True)
+    )
+
+    rows: list[dict[str, Any]] = []
+    for _, row in summary.iterrows():
+        rows.append({
+            "session_id": _json_scalar(row["session_id"]),
+            "batch_label": _json_scalar(row["batch"]),
+            "session_started_at": _iso_or_none(row["session_started_at"]),
+            "session_ended_at": _iso_or_none(row["session_ended_at"]),
+            "test_name": _json_scalar(row["test_name"]),
+            "test_type": _json_scalar(row["test_type"]),
+            "test_key": _json_scalar(row["test_key"]),
+            "sort_order": _json_scalar(row["sort_order"]),
+            "samples": _json_scalar(row["samples"]),
+            "total_chars": _json_scalar(row["total_chars"]),
+            "correct": _num_or_none(row["correct"]),
+            "errors": _num_or_none(row["errors"]),
+            "dur_avg": _num_or_none(row["dur_avg"]),
+            "wpm": _num_or_none(row["wpm"]),
+            "raw_wpm": _num_or_none(row["rawWpm"]),
+            "acc": _num_or_none(row["acc"]),
+            "consistency": _num_or_none(row["consistency"]),
+            "pb_count": _json_scalar(row["pb_count"]),
+            "source_breakdown": _jsonify(row["source_breakdown"]),
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Display
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 def _sep(label: str = "") -> None:
@@ -499,18 +942,19 @@ def summarize_batches(df: pd.DataFrame, batches: list[str]) -> pd.DataFrame:
         df[df["batch"].isin(batches)]
         .groupby(["batch", "test_name"], as_index=False)
         .agg(
-            test_type   = ("test_type",    "first"),
-            sort_order  = ("sort_order",   "min"),
-            samples     = ("test_name",    "size"),
-            total_chars = ("total_chars",  "first"),
-            correct     = ("correct",      "mean"),
-            errors      = ("errors",       "mean"),
-            dur_avg     = ("testDuration", "mean"),
-            wpm         = ("wpm",          "mean"),
-            rawWpm      = ("rawWpm",       "mean"),
-            acc         = ("acc",          "mean"),
-            consistency = ("consistency",  "mean"),
-            pb_count    = ("pb",           lambda s: (s == "*").sum()),
+            test_type=("test_type", "first"),
+            test_key=("test_key", "first"),
+            sort_order=("sort_order", "min"),
+            samples=("test_name", "size"),
+            total_chars=("total_chars", "first"),
+            correct=("correct", "mean"),
+            errors=("errors", "mean"),
+            dur_avg=("testDuration", "mean"),
+            wpm=("wpm", "mean"),
+            rawWpm=("rawWpm", "mean"),
+            acc=("acc", "mean"),
+            consistency=("consistency", "mean"),
+            pb_count=("pb", lambda s: (s == "*").sum()),
         )
         .sort_values(["batch", "sort_order", "test_name"])
         .reset_index(drop=True)
@@ -558,11 +1002,11 @@ def print_pb_summary(df: pd.DataFrame, batches: list[str]) -> None:
     best = (
         fixed.groupby("test_name", as_index=False)
         .agg(
-            best_wpm         = ("wpm",         "max"),
-            best_acc         = ("acc",         "max"),
-            best_consistency = ("consistency", "max"),
-            runs             = ("wpm",         "count"),
-            pb_flags         = ("pb",          lambda s: (s == "*").sum()),
+            best_wpm=("wpm", "max"),
+            best_acc=("acc", "max"),
+            best_consistency=("consistency", "max"),
+            runs=("wpm", "count"),
+            pb_flags=("pb", lambda s: (s == "*").sum()),
         )
         .sort_values("best_wpm", ascending=False)
     )
@@ -581,13 +1025,26 @@ def main() -> None:
         add_override()
         return
 
-    csv_path = args.csv or find_latest_csv()
-    df       = load_data(csv_path)
-    df       = build_batches(df, args.gap_hours)
-    df       = assign_test_names(df, args.drill_cycle_size)
+    csv_path = args.csv or find_latest_csv(quiet=args.json)
+    df, override_count = load_data(csv_path, quiet=args.json)
+    df = build_batches(df, args.gap_hours)
+    df = assign_test_names(df, args.drill_cycle_size)
 
     all_batches: list[str] = df["batch"].drop_duplicates().tolist()
     batches = all_batches[-args.runs:]
+
+    if args.json:
+        export = build_json_export(
+            df=df,
+            batches=batches,
+            csv_path=csv_path,
+            override_path=OVERRIDE_PATH,
+            override_count=override_count,
+            gap_hours=args.gap_hours,
+            drill_cycle_size=args.drill_cycle_size,
+        )
+        print(json.dumps(export, indent=2, ensure_ascii=False))
+        return
 
     print()
     print("Batches:")

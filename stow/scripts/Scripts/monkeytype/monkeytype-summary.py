@@ -70,6 +70,30 @@ DRILL_SEQUENCE: list[str] = [
     "raw",
 ]
 
+# ---------------------------------------------------------------------------
+# Calibration / warmup exclusions
+#
+# These rows stay in the raw data, but are ignored by summaries, PB tables,
+# trends, and JSON export.
+# ---------------------------------------------------------------------------
+
+# Optional: remove whole early batches if the first day(s) were setup noise.
+IGNORED_BATCHES: set[str] = {
+    # "2026-05-12 21:45",
+    # "2026-05-13 05:59",
+}
+
+# Skip the first N occurrences of a named test across the whole dataset.
+# Start small: right=1 removes the first anomalous right-hand calibration run.
+CALIBRATION_SKIP_FIRST: dict[str, int] = {
+    "right": 1,
+    # "left": 1,
+    # "both": 1,
+    # "operators": 1,
+    # "punctuation+numbers": 1,
+    # "raw": 1,
+}
+
 # Columns shown in the raw-attempts table.
 RAW_COLS = [
     "batch",
@@ -84,6 +108,7 @@ RAW_COLS = [
     "acc",
     "consistency",
     "pb",
+    "analysis_included"
 ]
 
 SEP = "=" * 70
@@ -214,6 +239,27 @@ def _safe_max(records: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
             best = record
             best_val = val
     return best
+
+def apply_analysis_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Mark warmup / calibration rows so they can be excluded from analysis
+    without deleting the raw history.
+    """
+    out = df.copy()
+    out["analysis_included"] = True
+
+    if IGNORED_BATCHES:
+        out.loc[out["batch"].isin(IGNORED_BATCHES), "analysis_included"] = False
+
+    if CALIBRATION_SKIP_FIRST:
+        ordered = out.sort_values(["dt", "batch_id", "attempt_in_batch"])
+        for test_name, skip_n in CALIBRATION_SKIP_FIRST.items():
+            if skip_n <= 0:
+                continue
+            drop_idx = ordered.index[ordered["test_name"] == test_name].tolist()[:skip_n]
+            out.loc[drop_idx, "analysis_included"] = False
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1027,15 +1073,19 @@ def main() -> None:
 
     csv_path = args.csv or find_latest_csv(quiet=args.json)
     df, override_count = load_data(csv_path, quiet=args.json)
+    
     df = build_batches(df, args.gap_hours)
     df = assign_test_names(df, args.drill_cycle_size)
+    df = apply_analysis_filters(df)
+
+    analysis_df = df[df["analysis_included"]].copy()
 
     all_batches: list[str] = df["batch"].drop_duplicates().tolist()
     batches = all_batches[-args.runs:]
 
     if args.json:
         export = build_json_export(
-            df=df,
+            df=analysis_df,
             batches=batches,
             csv_path=csv_path,
             override_path=OVERRIDE_PATH,

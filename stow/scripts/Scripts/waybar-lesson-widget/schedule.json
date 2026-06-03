@@ -2,34 +2,21 @@
   "timezone": "Europe/Zaporozhye",
   "days": {
     "monday": [
-      { "start": "08:55", "end": "09:40", "name": "Ukrainian" },
-      { "start": "09:50", "end": "10:35", "name": "Algebra" }
+      { "start": "08:00", "end": "09:30", "name": "Taekwondo" },
     ],
-    "tuesday": [
-      { "start": "10:45", "end": "11:30", "name": "Spanish" },
-      { "start": "12:30", "end": "13:15", "name": "History" },
-      { "start": "17:15", "end": "18:45", "name": "Taekwondo" }
-    ],
+    "tuesday": [],
     "wednesday": [
-      { "start": "08:55", "end": "09:40", "name": "English" },
-      { "start": "10:45", "end": "11:30", "name": "Physics" },
-      { "start": "12:30", "end": "13:15", "name": "Chemistry" },
-      { "start": "13:30", "end": "14:15", "name": "Algebra" },
-      { "start": "18:00", "end": "19:20", "name": "Robotics #1" },
-      { "start": "19:30", "end": "20:50", "name": "Robotics #2" }
+      { "start": "08:00", "end": "09:30", "name": "Taekwondo" },
+      { "start": "17:00", "end": "18:20", "name": "HTML #1" },
+      { "start": "18:30", "end": "19:50", "name": "HTML #2" }
     ],
-    "thursday": [
-      { "start": "08:55", "end": "09:40", "name": "Geometry" },
-      { "start": "09:50", "end": "10:35", "name": "Geometry" },
-      { "start": "17:00", "end": "18:30", "name": "Taekwondo" }
-    ],
+    "thursday": [],
     "friday": [
-      { "start": "08:55", "end": "09:40", "name": "English" },
-      { "start": "10:45", "end": "11:30", "name": "Ukrainian" }
+      { "start": "08:00", "end": "09:30", "name": "Taekwondo" },
     ],
     "saturday": [
-      { "start": "15:00", "end": "16:20", "name": "HTML #1" },
-      { "start": "16:30", "end": "17:50", "name": "HTML #2" }
+      { "start": "15:00", "end": "16:20", "name": "C++ #1" },
+      { "start": "16:30", "end": "17:50", "name": "C++ #2" }
     ],
     "sunday": []
   }

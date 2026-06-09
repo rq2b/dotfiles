@@ -6,7 +6,7 @@ SEARCH_ROOTS=(
     "$HOME/repos"
 )
 
-ITSTEP_MEDIA="$HOME/Syncthing/ITStep/Media"
+MEDIA="$HOME/Syncthing/core/Media"
 
 title="$(
   hyprctl clients -j \
@@ -38,8 +38,8 @@ done
 
 [[ -n "$note_path" ]] || exit 2
 
-if [[ "$note_path" == *"/ITStep/"* ]]; then
-    image_path="$ITSTEP_MEDIA"
+if [[ "$note_path" == *"/core/"* ]]; then
+    image_path="$MEDIA"
 else
     image_path="$(dirname "$note_path")"
 fi

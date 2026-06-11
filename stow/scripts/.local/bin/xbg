@@ -11,8 +11,15 @@ fi
 
 pkill -x swaybg || true
 
+HORIZONTAL="DP-1"
+VERTICAL=$(hyprctl monitors -j | jq -r '
+    .[]
+    | select(.description=="LG Electronics LG FULL HD 0x01010101")
+    | .name
+')
+
 uwsm-app -- swaybg \
-    -o DP-1 \
+    -o "$HORIZONTAL" \
     -i "$HOME/dotfiles/stow/wallpapers/.config/omarchy/backgrounds/hinterlands/horizontal-00.jpg" \
     -m fill \
     >/dev/null 2>&1 &
@@ -20,7 +27,7 @@ uwsm-app -- swaybg \
 disown
 
 uwsm-app -- swaybg \
-    -o HDMI-A-1 \
+    -o "$VERTICAL" \
     -i "$HOME/dotfiles/stow/wallpapers/.config/omarchy/backgrounds/hinterlands/vertical-11.jpg" \
     -m fill \
     >/dev/null 2>&1 &

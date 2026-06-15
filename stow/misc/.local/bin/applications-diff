@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 4 )); then
+  echo "Usage: $0 <dir1> <dir2> <out1> <out2>"
+  exit 1
+fi
+
+dir1=$1
+dir2=$2
+out1=$3
+out2=$4
+
+if [[ ! -d "$dir1" || ! -d "$dir2" ]]; then
+  echo "Both dir1 and dir2 must be directories"
+  exit 1
+fi
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+# Build union of basenames
+{
+  find "$dir1" -maxdepth 1 -type f -name '*.desktop' -printf '%f\n'
+  find "$dir2" -maxdepth 1 -type f -name '*.desktop' -printf '%f\n'
+} | sort -u > "$tmp"
+
+write_side() {
+  local dir=$1
+  local out=$2
+
+  : > "$out"
+
+  while IFS= read -r name; do
+    local f="$dir/$name"
+
+    printf '### %s\n\n' "$name" >> "$out"
+
+    if [[ -f "$f" ]]; then
+      cat -- "$f" >> "$out"
+    else
+      printf '[missing]\n' >> "$out"
+    fi
+
+    printf '\n\n' >> "$out"
+  done < "$tmp"
+}
+
+write_side "$dir1" "$out1"
+write_side "$dir2" "$out2"
+
+echo "Wrote:"
+echo "  $out1"
+echo "  $out2"

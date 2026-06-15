@@ -1,0 +1,10 @@
+[Unit]
+Description=Switch EasyEffects presets based on audio port
+
+[Service]
+ExecStart=%h/.local/bin/easyeffects-port-switch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

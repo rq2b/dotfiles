@@ -1,0 +1,36 @@
+#!/bin/bash
+
+WATCH_DIR="$HOME/Videos/replays"
+ARCHIVE_DIR="$WATCH_DIR/archive"
+FILE="replay.mp4"
+SKIP_FLAG="$WATCH_DIR/.skip_next"
+
+mkdir -p "$ARCHIVE_DIR"
+
+inotifywait -m -e close_write --format '%f' "$WATCH_DIR" | while read changed_file
+do
+    if [[ "$changed_file" == "$FILE" ]]; then
+
+        # If manual override flag exists → skip this save
+        if [[ -f "$SKIP_FLAG" ]]; then
+            rm -f "$SKIP_FLAG"
+            echo "Skipped replay (replay-previous active)"
+            continue
+        fi
+
+        FULL_PATH="$WATCH_DIR/$FILE"
+
+        # Skip if file doesn't exist
+        [[ -f "$FULL_PATH" ]] || continue
+
+        # Skip if file is too small (likely incomplete)
+        size=$(stat -c%s "$FULL_PATH" 2>/dev/null)
+        [[ "$size" -gt 1000000 ]] || continue
+
+        timestamp=$(date +"%H-%M-%S")
+
+        if cp "$FULL_PATH" "$ARCHIVE_DIR/$timestamp.mp4" 2>/dev/null; then
+            echo "Saved replay: $timestamp.mp4"
+        fi
+    fi
+done

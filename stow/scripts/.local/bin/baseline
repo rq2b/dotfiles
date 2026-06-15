@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    printf 'baseline: %s\n' "$*" >&2
+    exit 1
+}
+
+require_cmd() {
+    local cmd="${1:-}"
+    command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
+}
+
+get_distro() {
+    local distro="unknown"
+
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        distro="${ID:-unknown}"
+    fi
+
+    [[ "$distro" =~ ^[a-zA-Z0-9._-]+$ ]] || distro="unknown"
+    printf '%s\n' "$distro"
+}
+
+get_hostname_safe() {
+    local host
+
+    host="$(hostnamectl --static 2>/dev/null || hostname 2>/dev/null || true)"
+    [[ -n "$host" ]] || die "could not determine hostname"
+
+    host="$(printf '%s' "$host" | tr -cd '[:alnum:]._-')"
+    [[ -n "$host" ]] || die "hostname became empty after sanitization"
+
+    printf '%s\n' "$host"
+}
+
+generate_rand6() {
+    local rand
+
+    if command -v openssl >/dev/null 2>&1; then
+        rand="$(openssl rand -hex 3)"
+    elif [[ -r /dev/urandom ]]; then
+        rand="$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+    else
+        die "no secure random source available"
+    fi
+
+    [[ "$rand" =~ ^[0-9a-fA-F]{6}$ ]] || die "failed to generate random suffix"
+    printf '%s\n' "${rand,,}"
+}
+
+generate_snapshot_id() {
+    local distro host ts rand6
+
+    distro="$(get_distro)"
+    host="$(get_hostname_safe)"
+    ts="$(date '+%Y-%m-%d-%H-%M-%S')"
+    rand6="$(generate_rand6)"
+
+    printf '%s-%s-%s-%s\n' "$distro" "$host" "$ts" "$rand6"
+}
+
+baseline_dir() {
+    printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/baseline"
+}
+
+ensure_baseline_dir() {
+    local dir
+    dir="$(baseline_dir)"
+
+    mkdir -p "$dir" || die "failed to create baseline state directory: $dir"
+}
+
+snapshot_path_from_id() {
+    local snapshot_id="${1:-}"
+
+    [[ -n "$snapshot_id" ]] || die "snapshot_path_from_id requires a snapshot id"
+
+    printf '%s/%s.txt\n' "$(baseline_dir)" "$snapshot_id"
+}
+
+snapshot_exists() {
+    local snapshot_id="${1:-}"
+    local path
+
+    [[ -n "$snapshot_id" ]] || die "snapshot_exists requires a snapshot id"
+
+    path="$(snapshot_path_from_id "$snapshot_id")"
+    [[ -e "$path" ]]
+}
+
+require_snapshot_exists() {
+    local snapshot_id="${1:-}"
+    snapshot_exists "$snapshot_id" || die "snapshot not found: $snapshot_id"
+}
+
+current_timestamp_iso() {
+    date --iso-8601=seconds
+}
+
+current_kernel_release() {
+    uname -r
+}
+
+print_section_header() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "print_section_header requires a section name"
+
+    printf '********** %s **********\n' "$name"
+}
+
+print_section_gap() {
+    printf '\n\n\n'
+}
+
+write_metadata_section() {
+    local snapshot_id="${1:-}"
+
+    [[ -n "$snapshot_id" ]] || die "write_metadata_section requires a snapshot id"
+
+    print_section_header "metadata"
+    printf 'snapshot_id=%s\n' "$snapshot_id"
+    printf 'distro=%s\n' "$(get_distro)"
+    printf 'hostname=%s\n' "$(get_hostname_safe)"
+    printf 'created_at=%s\n' "$(current_timestamp_iso)"
+    printf 'kernel=%s\n' "$(current_kernel_release)"
+    print_section_gap
+}
+
+write_pkglist_explicit_section() {
+    require_cmd pacman
+
+    print_section_header "pkglist.explicit"
+    pacman -Qqe
+    print_section_gap
+}
+
+write_pkglist_foreign_section() {
+    require_cmd pacman
+
+    print_section_header "pkglist.foreign"
+    pacman -Qqm
+    print_section_gap
+}
+
+write_pkglist_all_section() {
+    require_cmd pacman
+
+    print_section_header "pkglist.all"
+    pacman -Qq
+    print_section_gap
+}
+
+write_enabled_system_section() {
+    require_cmd systemctl
+
+    print_section_header "enabled.system"
+    systemctl list-unit-files --state=enabled --no-pager --legend=0
+    print_section_gap
+}
+
+write_enabled_user_section() {
+    require_cmd systemctl
+
+    print_section_header "enabled.user"
+    systemctl --user list-unit-files --state=enabled --no-pager --legend=0
+    print_section_gap
+}
+
+write_snapshot_content() {
+    local snapshot_id="${1:-}"
+
+    [[ -n "$snapshot_id" ]] || die "write_snapshot_content requires a snapshot id"
+
+    write_metadata_section "$snapshot_id"
+    write_pkglist_explicit_section
+    write_pkglist_foreign_section
+    write_pkglist_all_section
+    write_enabled_system_section
+    write_enabled_user_section
+}
+
+list_snapshot_ids() {
+    local dir
+    dir="$(baseline_dir)"
+
+    [[ -d "$dir" ]] || return 0
+
+    find "$dir" -maxdepth 1 -type f -name '*.txt' -printf '%f\n' \
+        | sed 's/\.txt$//' \
+        | sort -r
+}
+
+pick_snapshot_id() {
+    local prompt="${1:-Select snapshot> }"
+
+    require_cmd fzf
+
+    list_snapshot_ids | fzf --prompt="$prompt" || die "snapshot selection cancelled"
+}
+
+cmd_capture_metadata() {
+    local snapshot_id path
+
+    ensure_baseline_dir
+
+    snapshot_id="$(generate_snapshot_id)"
+    path="$(snapshot_path_from_id "$snapshot_id")"
+
+    snapshot_exists "$snapshot_id" && die "snapshot already exists: $snapshot_id"
+
+    write_metadata_section "$snapshot_id" >"$path" || die "failed to write snapshot file: $path"
+
+    printf 'Created baseline snapshot:\n'
+    printf '  ID: %s\n' "$snapshot_id"
+    printf '  Path: %s\n' "$path"
+}
+
+cmd_capture() {
+    local snapshot_id path
+
+    ensure_baseline_dir
+    require_cmd pacman
+    require_cmd systemctl
+
+    snapshot_id="$(generate_snapshot_id)"
+    path="$(snapshot_path_from_id "$snapshot_id")"
+
+    snapshot_exists "$snapshot_id" && die "snapshot already exists: $snapshot_id"
+
+    write_snapshot_content "$snapshot_id" >"$path" || die "failed to write snapshot file: $path"
+
+    printf 'Created baseline snapshot:\n'
+    printf '  ID: %s\n' "$snapshot_id"
+    printf '  Path: %s\n' "$path"
+}
+
+cmd_list() {
+    list_snapshot_ids
+}
+
+cmd_show() {
+    local snapshot_id="${1:-}"
+    local path
+
+    if [[ -z "$snapshot_id" ]]; then
+        snapshot_id="$(pick_snapshot_id 'Show snapshot> ')"
+    fi
+
+    require_snapshot_exists "$snapshot_id"
+
+    path="$(snapshot_path_from_id "$snapshot_id")"
+    cat -- "$path"
+}
+
+cmd_diff() {
+    local left_id="${1:-}"
+    local right_id="${2:-}"
+    local left_path right_path
+
+    require_cmd meld
+
+    if [[ -z "$left_id" && -z "$right_id" ]]; then
+        left_id="$(pick_snapshot_id 'Left snapshot> ')"
+        right_id="$(pick_snapshot_id 'Right snapshot> ')"
+    elif [[ -n "$left_id" && -n "$right_id" ]]; then
+        :
+    else
+        die "diff requires either zero ids (interactive) or exactly two ids"
+    fi
+
+    require_snapshot_exists "$left_id"
+    require_snapshot_exists "$right_id"
+
+    left_path="$(snapshot_path_from_id "$left_id")"
+    right_path="$(snapshot_path_from_id "$right_id")"
+
+    meld "$left_path" "$right_path"
+}
+
+usage() {
+    cat <<'EOF'
+Usage:
+  baseline id
+  baseline dir
+  baseline path
+  baseline path <snapshot-id>
+  baseline capture-metadata
+  baseline capture
+  baseline list
+  baseline show [snapshot-id]
+  baseline diff
+  baseline diff <left-snapshot-id> <right-snapshot-id>
+
+Commands:
+  id                Print a new baseline snapshot ID
+  dir               Print the baseline state directory
+  path              Create the state directory and print a new snapshot path
+  path <id>         Print the snapshot path for an existing/provided snapshot ID
+  capture-metadata  Create a new snapshot file with only the metadata section
+  capture           Create a new snapshot file with metadata, package, and service sections
+  list              List available snapshot IDs, newest first
+  show [id]         Print a snapshot file to stdout, or pick one with fzf
+  diff              Pick two snapshots with fzf and open meld
+  diff <id1> <id2>  Open meld for two snapshot files
+EOF
+}
+
+cmd_id() {
+    generate_snapshot_id
+}
+
+cmd_dir() {
+    baseline_dir
+}
+
+cmd_path() {
+    local snapshot_id="${1:-}"
+
+    ensure_baseline_dir
+
+    if [[ -z "$snapshot_id" ]]; then
+        snapshot_id="$(generate_snapshot_id)"
+    fi
+
+    snapshot_path_from_id "$snapshot_id"
+}
+
+main() {
+    local cmd="${1:-}"
+
+    case "$cmd" in
+        id)
+            shift
+            [[ $# -eq 0 ]] || die "id does not accept arguments"
+            cmd_id
+            ;;
+        dir)
+            shift
+            [[ $# -eq 0 ]] || die "dir does not accept arguments"
+            cmd_dir
+            ;;
+        path)
+            shift
+            [[ $# -le 1 ]] || die "path accepts at most one snapshot id"
+            cmd_path "${1:-}"
+            ;;
+        capture-metadata)
+            shift
+            [[ $# -eq 0 ]] || die "capture-metadata does not accept arguments"
+            cmd_capture_metadata
+            ;;
+        capture)
+            shift
+            [[ $# -eq 0 ]] || die "capture does not accept arguments"
+            cmd_capture
+            ;;
+        list)
+            shift
+            [[ $# -eq 0 ]] || die "list does not accept arguments"
+            cmd_list
+            ;;
+        show)
+            shift
+            [[ $# -le 1 ]] || die "show accepts at most one snapshot id"
+            cmd_show "${1:-}"
+            ;;
+        diff)
+            shift
+            [[ $# -eq 0 || $# -eq 2 ]] || die "diff requires either zero ids or exactly two ids"
+            cmd_diff "${1:-}" "${2:-}"
+            ;;
+        -h|--help|help)
+            usage
+            ;;
+        "")
+            usage
+            exit 1
+            ;;
+        *)
+            die "unknown command: $cmd"
+            ;;
+    esac
+}
+
+main "$@"

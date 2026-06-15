@@ -1,0 +1,1116 @@
+#!/usr/bin/env bash
+
+# metadata
+XMETA="mirror datasets into structured backup units"
+
+if [[ "${1:-}" == "--meta" ]]; then
+    echo "$XMETA"
+    exit 0
+fi
+
+set -euo pipefail
+
+readonly XMIRROR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/xmirror"
+readonly XMIRROR_INSTALL_ID_FILE="$XMIRROR_STATE_DIR/install-id"
+readonly XMIRROR_SCHEMA_VERSION=1
+
+readonly XMIRROR_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/xmirror"
+readonly XMIRROR_DATASET_LOADER="$XMIRROR_CONFIG_DIR/datasets.sh"
+
+readonly XMIRROR_HOOKS_DIR="$XMIRROR_CONFIG_DIR/hooks"
+readonly XMIRROR_MIRROR_HOOKS_DIR="$XMIRROR_HOOKS_DIR/mirror"
+readonly XMIRROR_COMMON_HOOKS_DIR="$XMIRROR_HOOKS_DIR/common"
+
+load_hook_dir() {
+    local dir="$1"
+    local file
+
+    [[ -d "$dir" ]] || return 0
+
+    for file in "$dir"/*.sh; do
+        [[ -e "$file" ]] || continue
+        # shellcheck disable=SC1090
+        source "$file"
+    done
+}
+
+load_mirror_hooks() {
+    load_hook_dir "$XMIRROR_COMMON_HOOKS_DIR"
+    load_hook_dir "$XMIRROR_MIRROR_HOOKS_DIR"
+}
+
+load_dataset_config() {
+    [[ -f "$XMIRROR_DATASET_LOADER" ]] || die "Dataset loader not found: $XMIRROR_DATASET_LOADER"
+
+    # shellcheck disable=SC1090
+    source "$XMIRROR_DATASET_LOADER"
+
+    declare -F load_datasets_tab >/dev/null 2>&1 \
+        || die "load_datasets_tab is not defined in $XMIRROR_DATASET_LOADER"
+
+    load_datasets_tab || die "Failed to load datasets from datasets.tab"
+
+    [[ "${DATASET_NAMES+x}" == "x" ]] || die "DATASET_NAMES is not defined."
+    [[ "${DATASET_PATHS+x}" == "x" ]] || die "DATASET_PATHS is not defined."
+    [[ "${DATASET_PRE_MIRROR_HOOKS+x}" == "x" ]] || die "DATASET_PRE_MIRROR_HOOKS is not defined."
+    [[ "${DATASET_POST_MIRROR_HOOKS+x}" == "x" ]] || die "DATASET_POST_MIRROR_HOOKS is not defined."
+    [[ "${DATASET_EXCLUDES+x}" == "x" ]] || die "DATASET_EXCLUDES is not defined."
+}
+
+die() {
+    printf 'xmirror: %s\n' "$*" >&2
+    exit 1
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+require_env() {
+    [[ -n "${XMIRROR_ROOT:-}" ]] || die "XMIRROR_ROOT is not set. Refusing to continue."
+    [[ "$XMIRROR_ROOT" = /* ]] || die "XMIRROR_ROOT must be an absolute path."
+}
+
+ensure_state_dir() {
+    mkdir -p "$XMIRROR_STATE_DIR"
+    chmod 700 "$XMIRROR_STATE_DIR"
+}
+
+get_distro() {
+    local distro="unknown"
+
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        distro="${ID:-unknown}"
+    fi
+
+    [[ "$distro" =~ ^[a-zA-Z0-9._-]+$ ]] || distro="unknown"
+    printf '%s\n' "$distro"
+}
+
+get_hostname_safe() {
+    local host
+
+    host="$(hostnamectl --static 2>/dev/null || hostname 2>/dev/null || true)"
+    [[ -n "$host" ]] || die "Could not determine hostname."
+
+    host="$(printf '%s' "$host" | tr -cd '[:alnum:]._-')"
+    [[ -n "$host" ]] || die "Hostname became empty after sanitization."
+
+    printf '%s\n' "$host"
+}
+
+generate_rand6() {
+    local rand
+
+    if command -v openssl >/dev/null 2>&1; then
+        rand="$(openssl rand -hex 3)"
+    elif [[ -r /dev/urandom ]]; then
+        rand="$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+    else
+        die "No secure random source available."
+    fi
+
+    [[ "$rand" =~ ^[0-9a-fA-F]{6}$ ]] || die "Failed to generate random suffix."
+    printf '%s\n' "${rand,,}"
+}
+
+generate_install_id() {
+    local distro host ts rand6
+
+    distro="$(get_distro)"
+    host="$(get_hostname_safe)"
+    ts="$(date +%s)"
+    rand6="$(generate_rand6)"
+
+    printf '%s-%s-%s-%s\n' "$distro" "$host" "$ts" "$rand6"
+}
+
+read_install_id() {
+    [[ -f "$XMIRROR_INSTALL_ID_FILE" ]] || return 1
+
+    local id
+    id="$(<"$XMIRROR_INSTALL_ID_FILE")"
+
+    [[ "$id" =~ ^[A-Za-z0-9._-]+-[A-Za-z0-9._-]+-[0-9]{10,}-[0-9a-f]{6}$ ]] \
+        || die "Existing install ID is malformed: $XMIRROR_INSTALL_ID_FILE"
+
+    printf '%s\n' "$id"
+}
+
+write_install_id() {
+    local id="$1"
+    umask 077
+    printf '%s\n' "$id" > "$XMIRROR_INSTALL_ID_FILE"
+}
+
+get_unit_path() {
+    local install_id="$1"
+    printf '%s/%s\n' "$XMIRROR_ROOT" "$install_id"
+}
+
+get_metadata_file() {
+    local unit_path="$1"
+    printf '%s/metadata/install.json\n' "$unit_path"
+}
+
+write_metadata() {
+    local install_id="$1"
+    local unit_path="$2"
+
+    local metadata_file
+    metadata_file="$(get_metadata_file "$unit_path")"
+
+    if [[ -e "$metadata_file" ]]; then
+        die "Metadata already exists, refusing overwrite: $metadata_file"
+    fi
+
+    local distro hostname created_at
+
+    distro="$(get_distro)"
+    hostname="$(get_hostname_safe)"
+    created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+    umask 077
+
+    cat > "$metadata_file" <<EOF
+{
+  "install_id": "$install_id",
+  "distro": "$distro",
+  "hostname": "$hostname",
+  "created_at": "$created_at",
+  "schema_version": $XMIRROR_SCHEMA_VERSION
+}
+EOF
+}
+
+validate_dataset_name_uniqueness() {
+    local i j
+    local count="${#DATASET_NAMES[@]}"
+
+    for (( i=0; i<count; i++ )); do
+        for (( j=i+1; j<count; j++ )); do
+            if [[ "${DATASET_NAMES[$i]}" == "${DATASET_NAMES[$j]}" ]]; then
+                die "Duplicate dataset name found: ${DATASET_NAMES[$i]}"
+            fi
+        done
+    done
+}
+
+dataset_count() {
+    printf '%s\n' "${#DATASET_NAMES[@]}"
+}
+
+validate_datasets() {
+    local count
+    count="${#DATASET_NAMES[@]}"
+
+    [[ "${#DATASET_PATHS[@]}" -eq "$count" ]] || die "DATASET_PATHS length mismatch."
+    [[ "${#DATASET_PRE_MIRROR_HOOKS[@]}" -eq "$count" ]] || die "DATASET_PRE_MIRROR_HOOKS length mismatch."
+    [[ "${#DATASET_POST_MIRROR_HOOKS[@]}" -eq "$count" ]] || die "DATASET_POST_MIRROR_HOOKS length mismatch."
+    [[ "${#DATASET_EXCLUDES[@]}" -eq "$count" ]] || die "DATASET_EXCLUDES length mismatch."
+
+    local i name path
+    for (( i=0; i<count; i++ )); do
+        name="${DATASET_NAMES[$i]}"
+        path="${DATASET_PATHS[$i]}"
+
+        [[ -n "$name" ]] || die "Dataset name at index $i is empty."
+        [[ "$name" =~ ^[a-zA-Z0-9._-]+$ ]] || die "Dataset name is invalid: $name"
+
+        normalize_rel_path "$path" >/dev/null
+    done
+
+    validate_dataset_name_uniqueness
+}
+
+find_dataset_index_by_name() {
+    local wanted="$1"
+    local i
+
+    for i in "${!DATASET_NAMES[@]}"; do
+        if [[ "${DATASET_NAMES[$i]}" == "$wanted" ]]; then
+            printf '%s\n' "$i"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+prepare_target_for_sync() {
+    local source="$1"
+    local target="$2"
+
+    if [[ -d "$source" && ! -L "$source" ]]; then
+        # Directory source:
+        # - existing file/symlink target can be removed cheaply
+        # - existing real directory target is correct and should be preserved
+        if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
+            rm -f -- "$target"
+        fi
+
+        if [[ -e "$target" && ! -d "$target" ]]; then
+            die "Could not prepare directory target: $target"
+        fi
+
+        mkdir -p "$target"
+    else
+        # File/symlink source:
+        # - existing file/symlink target can be replaced
+        # - existing real directory target is a type mismatch and should not be recursively deleted
+        if [[ -d "$target" && ! -L "$target" ]]; then
+            die "Refusing to replace existing directory with non-directory dataset target: $target"
+        fi
+
+        if [[ -e "$target" || -L "$target" ]]; then
+            rm -f -- "$target"
+        fi
+    fi
+}
+
+sync_path_with_rsync() {
+    local source="$1"
+    local target="$2"
+    local exclude_block="${3:-}"
+
+    mkdir -p "$(dirname "$target")"
+    prepare_target_for_sync "$source" "$target"
+
+    if [[ -d "$source" && ! -L "$source" ]]; then
+        local rsync_args=(-a --delete)
+
+        if [[ -n "$exclude_block" ]]; then
+            local pattern
+            while IFS= read -r pattern; do
+                [[ -n "$pattern" ]] || continue
+                rsync_args+=(--exclude="$pattern")
+            done <<< "$exclude_block"
+        fi
+
+        rsync "${rsync_args[@]}" "$source"/ "$target"/
+    else
+        rsync -a "$source" "$target"
+    fi
+}
+
+run_mirror_hook() {
+    local dataset_name="${1:-}"
+    local hook_name="${2:-}"
+
+    [[ -n "$dataset_name" ]] || die "run_mirror_hook called without dataset name."
+    [[ -n "$hook_name" ]] || return 0
+
+    declare -F "$hook_name" >/dev/null 2>&1 \
+        || die "Mirror hook for dataset '$dataset_name' is not defined: $hook_name"
+
+    "$hook_name" "$dataset_name"
+}
+
+mirror_one_dataset() {
+    local unit_path="$1"
+    local dataset_name="$2"
+    local rel="$3"
+    local pre_hook="$4"
+    local post_hook="$5"
+    local exclude_block="$6"
+
+    local source target
+    rel="$(normalize_rel_path "$rel")"
+    source="$HOME/$rel"
+    target="$unit_path/home/$rel"
+
+    run_mirror_hook "$dataset_name" "$pre_hook"
+
+    if [[ ! -e "$source" && ! -L "$source" ]]; then
+        printf 'xmirror: skipping missing dataset %s (%s)\n' "$dataset_name" "$rel" >&2
+        return 0
+    fi
+
+    sync_path_with_rsync "$source" "$target" "$exclude_block"
+
+    run_mirror_hook "$dataset_name" "$post_hook"
+}
+
+ensure_unit_exists() {
+    local unit_path="$1"
+
+    [[ -d "$unit_path" ]] || die "Backup unit does not exist: $unit_path"
+    [[ -d "$unit_path/metadata" ]] || die "Backup unit missing metadata directory: $unit_path/metadata"
+    [[ -d "$unit_path/home" ]] || die "Backup unit missing home directory: $unit_path/home"
+    [[ -f "$(get_metadata_file "$unit_path")" ]] || die "Backup unit missing metadata file: $(get_metadata_file "$unit_path")"
+}
+
+normalize_rel_path() {
+    local rel="$1"
+
+    [[ -n "$rel" ]] || die "Encountered empty backup path."
+    [[ "$rel" != /* ]] || die "Backup paths must be home-relative, got absolute path: $rel"
+    [[ "$rel" != "." ]] || die "Refusing ambiguous backup path: ."
+    [[ "$rel" != ".." ]] || die "Refusing ambiguous backup path: .."
+    [[ "$rel" != *"/../"* ]] || die "Refusing parent traversal in path: $rel"
+    [[ "$rel" != ../* ]] || die "Refusing parent traversal in path: $rel"
+    [[ "$rel" != *"/.." ]] || die "Refusing parent traversal in path: $rel"
+    [[ "$rel" != "-" ]] || die 'Invalid dataset path: "-"'
+
+    printf '%s\n' "$rel"
+}
+
+ensure_root_ready() {
+    [[ -e "$XMIRROR_ROOT" ]] || die "XMIRROR_ROOT does not exist: $XMIRROR_ROOT"
+    [[ -d "$XMIRROR_ROOT" ]] || die "XMIRROR_ROOT is not a directory: $XMIRROR_ROOT"
+}
+
+env_file_exists() {
+    [[ -f "$XMIRROR_CONFIG_DIR/xmirror.env" ]]
+}
+
+state_dir_exists() {
+    [[ -d "$XMIRROR_STATE_DIR" ]]
+}
+
+root_is_configured() {
+    [[ -n "${XMIRROR_ROOT:-}" ]]
+}
+
+root_is_valid() {
+    [[ -n "${XMIRROR_ROOT:-}" ]] || return 1
+    [[ "$XMIRROR_ROOT" = /* ]] || return 1
+    [[ -d "$XMIRROR_ROOT" ]] || return 1
+}
+
+service_unit_file() {
+    printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/xmirror.service"
+}
+
+timer_unit_file() {
+    printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/xmirror.timer"
+}
+
+systemd_user_available() {
+    systemctl --user show-environment >/dev/null 2>&1
+}
+
+systemd_unit_enabled_state() {
+    local unit="$1"
+
+    if ! systemd_user_available; then
+        printf 'unknown\n'
+        return 0
+    fi
+
+    systemctl --user is-enabled "$unit" 2>/dev/null || true
+}
+
+systemd_unit_active_state() {
+    local unit="$1"
+
+    if ! systemd_user_available; then
+        printf 'unknown\n'
+        return 0
+    fi
+
+    systemctl --user is-active "$unit" 2>/dev/null || true
+}
+
+timer_state() {
+    if timer_is_on; then
+        printf 'on\n'
+    else
+        printf 'off\n'
+    fi
+}
+
+timer_next_trigger() {
+    if ! systemd_user_available; then
+        printf 'systemd-unavailable\n'
+        return 0
+    fi
+
+    local value
+    value="$(systemctl --user show xmirror.timer -p NextElapseUSecRealtime --value 2>/dev/null || true)"
+
+    if [[ -n "$value" && "$value" != "n/a" ]]; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+
+    local active_state
+    active_state="$(systemd_unit_active_state xmirror.timer)"
+
+    case "$active_state" in
+        active|activating)
+            printf 'n/a\n'
+            ;;
+        inactive|failed)
+            printf 'inactive\n'
+            ;;
+        *)
+            printf 'unknown\n'
+            ;;
+    esac
+}
+
+print_status_line() {
+    local key="$1"
+    local value="$2"
+    printf '%-24s %s\n' "$key" "$value"
+}
+
+is_valid_unit_dir() {
+    local unit_path="$1"
+
+    [[ -d "$unit_path" ]] || return 1
+    [[ -d "$unit_path/metadata" ]] || return 1
+    [[ -d "$unit_path/home" ]] || return 1
+    [[ -f "$(get_metadata_file "$unit_path")" ]] || return 1
+
+    return 0
+}
+
+service_unit_exists() {
+    [[ -f "$(service_unit_file)" ]]
+}
+
+timer_unit_exists() {
+    [[ -f "$(timer_unit_file)" ]]
+}
+
+ensure_systemd_units_present() {
+    service_unit_exists || die "xmirror.service is missing: $(service_unit_file)"
+    timer_unit_exists || die "xmirror.timer is missing: $(timer_unit_file)"
+}
+
+ensure_unit_created() {
+    local id="$1"
+    local unit_path="$2"
+
+    if is_valid_unit_dir "$unit_path"; then
+        return 0
+    fi
+
+    if [[ -e "$unit_path" && ! -d "$unit_path" ]]; then
+        die "Backup unit path exists but is not a directory: $unit_path"
+    fi
+
+    if [[ -d "$unit_path" ]]; then
+        [[ -d "$unit_path/metadata" ]] || mkdir -p "$unit_path/metadata"
+        [[ -d "$unit_path/home" ]] || mkdir -p "$unit_path/home"
+
+        if [[ ! -f "$(get_metadata_file "$unit_path")" ]]; then
+            write_metadata "$id" "$unit_path"
+        fi
+    else
+        mkdir -p "$unit_path/metadata" "$unit_path/home"
+        write_metadata "$id" "$unit_path"
+    fi
+
+    is_valid_unit_dir "$unit_path" \
+        || die "Failed to prepare valid backup unit: $unit_path"
+}
+
+systemd_user_daemon_reload() {
+    systemd_user_available || die "systemd --user is not available."
+    systemctl --user daemon-reload
+}
+
+timer_is_on() {
+    if ! systemd_user_available; then
+        return 1
+    fi
+
+    local active_state
+    active_state="$(systemd_unit_active_state xmirror.timer)"
+    [[ "$active_state" == "active" || "$active_state" == "activating" ]]
+}
+
+require_bootstrap_ready() {
+    require_env
+    ensure_root_ready
+    ensure_systemd_units_present
+
+    local id unit_path
+    id="$(read_install_id)" || die "No install ID exists yet. Run: xmirror bootstrap"
+    unit_path="$(get_unit_path "$id")"
+
+    is_valid_unit_dir "$unit_path" || die "Backup unit is missing or invalid. Run: xmirror bootstrap"
+}
+
+timer_wants_link() {
+    printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/timers.target.wants/xmirror.timer"
+}
+
+remove_timer_enablement_link() {
+    local wants_link timer_file
+    wants_link="$(timer_wants_link)"
+    timer_file="$(timer_unit_file)"
+
+    [[ -L "$wants_link" || -e "$wants_link" ]] || return 0
+
+    if [[ -L "$wants_link" ]]; then
+        local target
+        target="$(readlink -f "$wants_link" 2>/dev/null || true)"
+        local expected
+        expected="$(readlink -f "$timer_file" 2>/dev/null || true)"
+
+        if [[ -n "$target" && -n "$expected" && "$target" == "$expected" ]]; then
+            rm -f -- "$wants_link"
+            return 0
+        fi
+    fi
+
+    die "Refusing to remove unexpected timer enablement path: $wants_link"
+}
+
+timer_override_dir() {
+    printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/xmirror.timer.d"
+}
+
+timer_override_file() {
+    printf '%s/override.conf\n' "$(timer_override_dir)"
+}
+
+valid_interval() {
+    local value="$1"
+    [[ "$value" =~ ^[0-9]+(us|min|ms|s|m|h|d|w)$ ]]
+}
+
+current_interval_from_env() {
+    local env_file="$XMIRROR_CONFIG_DIR/xmirror.env"
+    local value=""
+
+    if [[ -f "$env_file" ]]; then
+        value="$(
+            awk -F= '
+                /^[[:space:]]*XMIRROR_INTERVAL=/ {
+                    sub(/^[[:space:]]*XMIRROR_INTERVAL=/, "", $0)
+                    print $0
+                    exit
+                }
+            ' "$env_file"
+        )"
+    fi
+
+    if [[ -n "$value" ]]; then
+        printf '%s\n' "$value"
+    else
+        printf '10min\n'
+    fi
+}
+
+set_env_key() {
+    local key="$1"
+    local value="$2"
+    local env_file="$XMIRROR_CONFIG_DIR/xmirror.env"
+    local tmp
+
+    mkdir -p "$XMIRROR_CONFIG_DIR"
+    [[ -f "$env_file" ]] || : > "$env_file"
+
+    tmp="$(mktemp)"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { updated = 0 }
+        $0 ~ "^[[:space:]]*" key "=" {
+            print key "=" value
+            updated = 1
+            next
+        }
+        { print }
+        END {
+            if (!updated) {
+                print key "=" value
+            }
+        }
+    ' "$env_file" > "$tmp" || {
+        rm -f -- "$tmp"
+        die "Failed to update env file: $env_file"
+    }
+
+    mv -- "$tmp" "$env_file"
+}
+
+write_timer_override() {
+    local interval="$1"
+    local override_dir override_file
+
+    override_dir="$(timer_override_dir)"
+    override_file="$(timer_override_file)"
+
+    mkdir -p "$override_dir"
+
+    cat > "$override_file" <<EOF
+[Timer]
+OnUnitActiveSec=
+OnUnitActiveSec=$interval
+EOF
+}
+
+reload_timer_configuration() {
+    systemd_user_daemon_reload
+
+    if timer_is_on; then
+        systemctl --user restart xmirror.timer
+    fi
+}
+
+cmd_config_get() {
+    local interval
+    interval="$(current_interval_from_env)"
+
+    print_status_line "XMIRROR_ROOT" "${XMIRROR_ROOT:-unset}"
+    print_status_line "XMIRROR_INTERVAL" "$interval"
+    print_status_line "timer_override_file" "$(timer_override_file)"
+
+    if [[ -f "$(timer_override_file)" ]]; then
+        print_status_line "timer_override_present" "yes"
+    else
+        print_status_line "timer_override_present" "no"
+    fi
+}
+
+cmd_config_set() {
+    local key="${1:-}"
+    local value="${2:-}"
+
+    [[ -n "$key" ]] || die "config set requires a key."
+    [[ -n "$value" ]] || die "config set requires a value."
+
+    case "$key" in
+        interval)
+            valid_interval "$value" || die "Invalid interval: $value"
+            set_env_key "XMIRROR_INTERVAL" "$value"
+            write_timer_override "$value"
+            reload_timer_configuration
+
+            print_status_line "config" "updated"
+            print_status_line "XMIRROR_INTERVAL" "$value"
+            print_status_line "timer_active" "$(systemd_unit_active_state xmirror.timer)"
+
+            local next_trigger
+            next_trigger="$(timer_next_trigger)"
+            [[ -n "$next_trigger" ]] || next_trigger="unknown"
+            print_status_line "timer_next_trigger" "$next_trigger"
+            ;;
+        *)
+            die "Unknown config key: $key"
+            ;;
+    esac
+}
+
+cmd_config() {
+    local subcmd="${1:-}"
+
+    case "$subcmd" in
+        get)
+            shift
+            [[ $# -eq 0 ]] || die "config get takes no arguments."
+            cmd_config_get
+            ;;
+        set)
+            shift
+            [[ $# -eq 2 ]] || die "Usage: xmirror config set interval <DURATION>"
+            cmd_config_set "$1" "$2"
+            ;;
+        *)
+            die "Usage: xmirror config get | xmirror config set interval <DURATION>"
+            ;;
+    esac
+}
+
+cmd_enable() {
+    require_bootstrap_ready
+    systemd_user_daemon_reload
+
+    systemctl --user enable --now xmirror.timer
+
+    print_status_line "enable" "ok"
+    print_status_line "timer_enabled" "$(systemd_unit_enabled_state xmirror.timer)"
+    print_status_line "timer_active" "$(systemd_unit_active_state xmirror.timer)"
+
+    local next_trigger
+    next_trigger="$(timer_next_trigger)"
+    [[ -n "$next_trigger" ]] || next_trigger="unknown"
+    print_status_line "timer_next_trigger" "$next_trigger"
+}
+
+cmd_disable() {
+    require_bootstrap_ready
+    systemd_user_daemon_reload
+
+    systemctl --user stop xmirror.timer >/dev/null 2>&1 || true
+    remove_timer_enablement_link
+    systemd_user_daemon_reload
+
+    print_status_line "disable" "ok"
+    print_status_line "timer_enabled" "$(systemd_unit_enabled_state xmirror.timer)"
+    print_status_line "timer_active" "$(systemd_unit_active_state xmirror.timer)"
+
+    local next_trigger
+    next_trigger="$(timer_next_trigger)"
+    [[ -n "$next_trigger" ]] || next_trigger="unknown"
+    print_status_line "timer_next_trigger" "$next_trigger"
+}
+
+cmd_toggle() {
+    require_bootstrap_ready
+
+    if timer_is_on; then
+        cmd_disable
+    else
+        cmd_enable
+    fi
+}
+
+cmd_bootstrap() {
+    require_env
+    ensure_state_dir
+    ensure_root_ready
+    ensure_systemd_units_present
+
+    local id unit_path
+    id="$(cmd_ensure_id)"
+    unit_path="$(get_unit_path "$id")"
+
+    ensure_unit_created "$id" "$unit_path"
+    systemd_user_daemon_reload
+
+    print_status_line "bootstrap" "ok"
+    print_status_line "install_id" "$id"
+    print_status_line "unit_path" "$unit_path"
+    print_status_line "timer_enabled" "$(systemd_unit_enabled_state xmirror.timer)"
+    print_status_line "timer_active" "$(systemd_unit_active_state xmirror.timer)"
+}
+
+cmd_status() {
+    local env_file="$XMIRROR_CONFIG_DIR/xmirror.env"
+    local install_id=""
+    local unit_path=""
+    local service_file=""
+    local timer_file=""
+    local timer_enabled="unknown"
+    local timer_active="unknown"
+    local next_trigger="unknown"
+
+    service_file="$(service_unit_file)"
+    timer_file="$(timer_unit_file)"
+
+    print_status_line "env_file" "$env_file"
+    if env_file_exists; then
+        print_status_line "env_file_present" "yes"
+    else
+        print_status_line "env_file_present" "no"
+    fi
+
+    if root_is_configured; then
+        print_status_line "XMIRROR_ROOT" "$XMIRROR_ROOT"
+    else
+        print_status_line "XMIRROR_ROOT" "unset"
+    fi
+
+    if root_is_valid; then
+        print_status_line "root_valid" "yes"
+    else
+        print_status_line "root_valid" "no"
+    fi
+
+    print_status_line "state_dir" "$XMIRROR_STATE_DIR"
+    if state_dir_exists; then
+        print_status_line "state_dir_present" "yes"
+    else
+        print_status_line "state_dir_present" "no"
+    fi
+
+    if read_install_id >/dev/null 2>&1; then
+        install_id="$(read_install_id)"
+        print_status_line "install_id_present" "yes"
+        print_status_line "install_id" "$install_id"
+    else
+        print_status_line "install_id_present" "no"
+    fi
+
+    if [[ -n "$install_id" && -n "${XMIRROR_ROOT:-}" && "$XMIRROR_ROOT" = /* ]]; then
+        unit_path="$(get_unit_path "$install_id")"
+        print_status_line "unit_path" "$unit_path"
+
+        if is_valid_unit_dir "$unit_path"; then
+            print_status_line "unit_valid" "yes"
+        else
+            print_status_line "unit_valid" "no"
+        fi
+    else
+        print_status_line "unit_path" "unknown"
+        print_status_line "unit_valid" "no"
+    fi
+
+    print_status_line "service_unit" "$service_file"
+    if [[ -f "$service_file" ]]; then
+        print_status_line "service_unit_present" "yes"
+    else
+        print_status_line "service_unit_present" "no"
+    fi
+
+    print_status_line "timer_unit" "$timer_file"
+    if [[ -f "$timer_file" ]]; then
+        print_status_line "timer_unit_present" "yes"
+    else
+        print_status_line "timer_unit_present" "no"
+    fi
+
+    timer_enabled="$(systemd_unit_enabled_state xmirror.timer)"
+    timer_active="$(systemd_unit_active_state xmirror.timer)"
+    next_trigger="$(timer_next_trigger)"
+
+    [[ -n "$timer_enabled" ]] || timer_enabled="unknown"
+    [[ -n "$timer_active" ]] || timer_active="unknown"
+    [[ -n "$next_trigger" ]] || next_trigger="unknown"
+
+    print_status_line "timer_enabled" "$timer_enabled"
+    print_status_line "timer_active" "$timer_active"
+    print_status_line "timer_state" "$(timer_state)"
+    print_status_line "timer_next_trigger" "$next_trigger"
+    print_status_line "XMIRROR_INTERVAL" "$(current_interval_from_env)"
+}
+
+cmd_init_id() {
+    require_env
+    ensure_state_dir
+
+    if read_install_id >/dev/null 2>&1; then
+        die "Install ID already exists: $(read_install_id)"
+    fi
+
+    local id
+    id="$(generate_install_id)"
+    write_install_id "$id"
+
+    printf '%s\n' "$id"
+}
+
+cmd_show_id() {
+    ensure_state_dir
+    read_install_id || die "No install ID exists yet. Run: xmirror init-id"
+}
+
+cmd_ensure_id() {
+    require_env
+    ensure_state_dir
+
+    if read_install_id >/dev/null 2>&1; then
+        read_install_id
+        return 0
+    fi
+
+    local id
+    id="$(generate_install_id)"
+    write_install_id "$id"
+    printf '%s\n' "$id"
+}
+
+cmd_show_paths() {
+    require_env
+    printf 'XMIRROR_ROOT=%s\n' "$XMIRROR_ROOT"
+    printf 'XMIRROR_STATE_DIR=%s\n' "$XMIRROR_STATE_DIR"
+    printf 'XMIRROR_INSTALL_ID_FILE=%s\n' "$XMIRROR_INSTALL_ID_FILE"
+
+    if read_install_id >/dev/null 2>&1; then
+        local id
+        id="$(read_install_id)"
+        printf 'XMIRROR_UNIT_PATH=%s\n' "$(get_unit_path "$id")"
+    fi
+}
+
+cmd_list_datasets() {
+    load_dataset_config
+    validate_datasets
+
+    local i count
+    count="$(dataset_count)"
+
+    for (( i=0; i<count; i++ )); do
+        printf '%s\t%s' "${DATASET_NAMES[$i]}" "${DATASET_PATHS[$i]}"
+
+        if [[ -n "${DATASET_PRE_MIRROR_HOOKS[$i]}" ]]; then
+            printf '\tpre:%s' "${DATASET_PRE_MIRROR_HOOKS[$i]}"
+        fi
+
+        if [[ -n "${DATASET_POST_MIRROR_HOOKS[$i]}" ]]; then
+            printf '\tpost:%s' "${DATASET_POST_MIRROR_HOOKS[$i]}"
+        fi
+
+        if [[ -n "${DATASET_EXCLUDES[$i]}" ]]; then
+            printf '\texcludes:%s' "$(printf '%s' "${DATASET_EXCLUDES[$i]}" | tr '\n' ',' | sed 's/,$//')"
+        fi
+
+        printf '\n'
+    done
+}
+
+cmd_create_unit() {
+    require_env
+    ensure_state_dir
+    ensure_root_ready
+
+    local id unit_path
+    id="$(cmd_ensure_id)"
+    unit_path="$(get_unit_path "$id")"
+
+    if [[ -e "$unit_path" ]]; then
+        die "Backup unit already exists, refusing overwrite: $unit_path"
+    fi
+
+    mkdir -p "$unit_path/metadata" "$unit_path/home"
+    write_metadata "$id" "$unit_path"
+
+    printf '%s\n' "$unit_path"
+}
+
+cmd_mirror() {
+    require_env
+    require_cmd rsync
+    ensure_state_dir
+    ensure_root_ready
+    load_dataset_config
+    load_mirror_hooks
+    validate_datasets
+
+    local dataset_name="${1:-}"
+
+    [[ $# -le 1 ]] || die "mirror takes zero or one dataset name."
+
+    local id unit_path
+    id="$(cmd_ensure_id)"
+    unit_path="$(get_unit_path "$id")"
+
+    ensure_unit_exists "$unit_path"
+
+    if [[ -n "$dataset_name" ]]; then
+        local idx
+        idx="$(find_dataset_index_by_name "$dataset_name")" \
+            || die "Dataset not found: $dataset_name"
+
+        mirror_one_dataset \
+            "$unit_path" \
+            "${DATASET_NAMES[$idx]}" \
+            "${DATASET_PATHS[$idx]}" \
+            "${DATASET_PRE_MIRROR_HOOKS[$idx]}" \
+            "${DATASET_POST_MIRROR_HOOKS[$idx]}" \
+            "${DATASET_EXCLUDES[$idx]}"
+    else
+        local i count
+        count="$(dataset_count)"
+
+        for (( i=0; i<count; i++ )); do
+            mirror_one_dataset \
+                "$unit_path" \
+                "${DATASET_NAMES[$i]}" \
+                "${DATASET_PATHS[$i]}" \
+                "${DATASET_PRE_MIRROR_HOOKS[$i]}" \
+                "${DATASET_POST_MIRROR_HOOKS[$i]}" \
+                "${DATASET_EXCLUDES[$i]}"
+        done
+    fi
+
+    printf '%s\n' "$unit_path"
+}
+
+
+
+usage() {
+    cat <<'EOF'
+Usage:
+  xmirror init-id
+  xmirror ensure-id
+  xmirror show-id
+  xmirror show-paths
+  xmirror create-unit
+  xmirror mirror [DATASET_NAME]
+  xmirror list-datasets
+  xmirror status
+  xmirror bootstrap
+  xmirror enable
+  xmirror disable
+  xmirror toggle
+  xmirror config get
+  xmirror config set interval <DURATION>
+EOF
+}
+
+main() {
+    local cmd="${1:-}"
+
+    case "$cmd" in
+        init-id)
+            shift
+            [[ $# -eq 0 ]] || die "init-id takes no arguments."
+            cmd_init_id
+            ;;
+        ensure-id)
+            shift
+            [[ $# -eq 0 ]] || die "ensure-id takes no arguments."
+            cmd_ensure_id
+            ;;
+        show-id)
+            shift
+            [[ $# -eq 0 ]] || die "show-id takes no arguments."
+            cmd_show_id
+            ;;
+        show-paths)
+            shift
+            [[ $# -eq 0 ]] || die "show-paths takes no arguments."
+            cmd_show_paths
+            ;;
+        create-unit)
+            shift
+            [[ $# -eq 0 ]] || die "create-unit takes no arguments."
+            cmd_create_unit
+            ;;
+        mirror)
+            shift
+            [[ $# -le 1 ]] || die "mirror takes zero or one dataset name."
+            cmd_mirror "$@"
+            ;;
+        list-datasets)
+            shift
+            [[ $# -eq 0 ]] || die "list-datasets takes no arguments."
+            cmd_list_datasets
+            ;;
+        status)
+            shift
+            [[ $# -eq 0 ]] || die "status takes no arguments."
+            cmd_status
+            ;;
+        bootstrap)
+            shift
+            [[ $# -eq 0 ]] || die "bootstrap takes no arguments."
+            cmd_bootstrap
+            ;;
+        enable)
+            shift
+            [[ $# -eq 0 ]] || die "enable takes no arguments."
+            cmd_enable
+            ;;
+        disable)
+            shift
+            [[ $# -eq 0 ]] || die "disable takes no arguments."
+            cmd_disable
+            ;;
+        toggle)
+            shift
+            [[ $# -eq 0 ]] || die "toggle takes no arguments."
+            cmd_toggle
+            ;;
+        config)
+            shift
+            cmd_config "$@"
+            ;;
+        ""|-h|--help|help)
+            usage
+            ;;
+        *)
+            die "Unknown command: $cmd"
+            ;;
+    esac
+}
+
+main "$@"

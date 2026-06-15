@@ -1,0 +1,9 @@
+[Unit]
+Description=Mouse wheel volume modifier
+
+[Service]
+ExecStart=%h/.local/bin/mouse-volume.py
+Restart=always
+
+[Install]
+WantedBy=default.target

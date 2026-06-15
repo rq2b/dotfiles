@@ -1,0 +1,22 @@
+#!/bin/bash
+
+DIR="$HOME/Videos/replays/archive"
+TARGET="$HOME/Videos/replays/replay.mp4"
+SKIP_FLAG="$HOME/Videos/replays/.skip_next"
+
+# Get second newest file
+file=$(ls -t "$DIR"/*.mp4 2>/dev/null | sed -n '2p')
+
+if [[ -z "$file" ]]; then
+    echo "No second replay found"
+    exit 1
+fi
+
+echo "Loading previous replay: $(basename "$file")"
+
+# Tell watcher to ignore this overwrite
+touch "$SKIP_FLAG"
+
+# Safer overwrite (atomic)
+tmp="$TARGET.tmp"
+cp "$file" "$tmp" && mv "$tmp" "$TARGET"

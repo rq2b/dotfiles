@@ -1,0 +1,6 @@
+#!/bin/bash
+
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export HYPRLAND_INSTANCE_SIGNATURE=$(ls /run/user/$(id -u)/hypr | head -n1)
+
+exec hyprctl switchxkblayout current "$1"

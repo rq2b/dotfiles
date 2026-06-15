@@ -1,0 +1,9 @@
+[Unit]
+Description=Run xmirror backup
+Wants=default.target
+After=default.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/xmirror/xmirror.env
+ExecStart=%h/.local/bin/xmirror mirror

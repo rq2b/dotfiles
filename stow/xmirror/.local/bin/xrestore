@@ -1,0 +1,584 @@
+#!/usr/bin/env bash
+
+# metadata
+XMETA="restore mirrored datasets from backup units"
+
+if [[ "${1:-}" == "--meta" ]]; then
+    echo "$XMETA"
+    exit 0
+fi
+
+set -euo pipefail
+
+die() {
+    printf 'xrestore: %s\n' "$*" >&2
+    exit 1
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+require_env() {
+    [[ -n "${XMIRROR_ROOT:-}" ]] || die "XMIRROR_ROOT is not set. Refusing to continue."
+    [[ "$XMIRROR_ROOT" = /* ]] || die "XMIRROR_ROOT must be an absolute path."
+    [[ -e "$XMIRROR_ROOT" ]] || die "XMIRROR_ROOT does not exist: $XMIRROR_ROOT"
+    [[ -d "$XMIRROR_ROOT" ]] || die "XMIRROR_ROOT is not a directory: $XMIRROR_ROOT"
+}
+
+readonly XMIRROR_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/xmirror"
+readonly XMIRROR_DATASET_LOADER="$XMIRROR_CONFIG_DIR/datasets.sh"
+
+readonly XMIRROR_HOOKS_DIR="$XMIRROR_CONFIG_DIR/hooks"
+readonly XMIRROR_RESTORE_HOOKS_DIR="$XMIRROR_HOOKS_DIR/restore"
+readonly XMIRROR_COMMON_HOOKS_DIR="$XMIRROR_HOOKS_DIR/common"
+
+load_hook_dir() {
+    local dir="$1"
+    local file
+
+    [[ -d "$dir" ]] || return 0
+
+    for file in "$dir"/*.sh; do
+        [[ -e "$file" ]] || continue
+        # shellcheck disable=SC1090
+        source "$file"
+    done
+}
+
+load_restore_hooks() {
+    load_hook_dir "$XMIRROR_COMMON_HOOKS_DIR"
+    load_hook_dir "$XMIRROR_RESTORE_HOOKS_DIR"
+}
+
+load_dataset_config() {
+    [[ -f "$XMIRROR_DATASET_LOADER" ]] || die "Dataset loader not found: $XMIRROR_DATASET_LOADER"
+
+    # shellcheck disable=SC1090
+    source "$XMIRROR_DATASET_LOADER"
+
+    declare -F load_datasets_tab >/dev/null 2>&1 \
+        || die "load_datasets_tab is not defined in $XMIRROR_DATASET_LOADER"
+
+    load_datasets_tab || die "Failed to load datasets from datasets.tab"
+
+    [[ "${DATASET_NAMES+x}" == "x" ]] || die "DATASET_NAMES is not defined."
+    [[ "${DATASET_PATHS+x}" == "x" ]] || die "DATASET_PATHS is not defined."
+    [[ "${DATASET_PRE_RESTORE_HOOKS+x}" == "x" ]] || die "DATASET_PRE_RESTORE_HOOKS is not defined."
+    [[ "${DATASET_POST_RESTORE_HOOKS+x}" == "x" ]] || die "DATASET_POST_RESTORE_HOOKS is not defined."
+    [[ "${DATASET_EXCLUDES+x}" == "x" ]] || die "DATASET_EXCLUDES is not defined."
+}
+
+find_dataset_index_by_name() {
+    local wanted="$1"
+    local i
+
+    for i in "${!DATASET_NAMES[@]}"; do
+        if [[ "${DATASET_NAMES[$i]}" == "$wanted" ]]; then
+            printf '%s\n' "$i"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+validate_dataset_name_uniqueness() {
+    local i j
+    local count="${#DATASET_NAMES[@]}"
+
+    for (( i=0; i<count; i++ )); do
+        for (( j=i+1; j<count; j++ )); do
+            if [[ "${DATASET_NAMES[$i]}" == "${DATASET_NAMES[$j]}" ]]; then
+                die "Duplicate dataset name found: ${DATASET_NAMES[$i]}"
+            fi
+        done
+    done
+}
+
+dataset_count() {
+    printf '%s\n' "${#DATASET_NAMES[@]}"
+}
+
+validate_datasets() {
+    local count
+    count="${#DATASET_NAMES[@]}"
+
+    [[ "${#DATASET_PATHS[@]}" -eq "$count" ]] || die "DATASET_PATHS length mismatch."
+    [[ "${#DATASET_PRE_RESTORE_HOOKS[@]}" -eq "$count" ]] || die "DATASET_PRE_RESTORE_HOOKS length mismatch."
+    [[ "${#DATASET_POST_RESTORE_HOOKS[@]}" -eq "$count" ]] || die "DATASET_POST_RESTORE_HOOKS length mismatch."
+    [[ "${#DATASET_EXCLUDES[@]}" -eq "$count" ]] || die "DATASET_EXCLUDES length mismatch."
+
+    local i name path
+    for (( i=0; i<count; i++ )); do
+        name="${DATASET_NAMES[$i]}"
+        path="${DATASET_PATHS[$i]}"
+
+        [[ -n "$name" ]] || die "Dataset name at index $i is empty."
+        [[ "$name" =~ ^[a-zA-Z0-9._-]+$ ]] || die "Dataset name is invalid: $name"
+
+        normalize_rel_path "$path" >/dev/null
+    done
+
+    validate_dataset_name_uniqueness
+}
+
+prepare_target_for_force_restore() {
+    local source="$1"
+    local target="$2"
+
+    if [[ -d "$source" && ! -L "$source" ]]; then
+        if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
+            rm -f -- "$target"
+        fi
+
+        if [[ -e "$target" && ! -d "$target" ]]; then
+            die "Could not prepare directory target for restore: $target"
+        fi
+
+        mkdir -p "$target"
+    else
+        if [[ -d "$target" && ! -L "$target" ]]; then
+            die "Refusing to replace existing directory with non-directory restore target: $target"
+        fi
+
+        if [[ -e "$target" || -L "$target" ]]; then
+            rm -f -- "$target"
+        fi
+    fi
+}
+
+prepare_target_for_merge_restore() {
+    local source="$1"
+    local target="$2"
+
+    if [[ -d "$source" && ! -L "$source" ]]; then
+        if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
+            rm -f -- "$target"
+        fi
+
+        if [[ -e "$target" && ! -d "$target" ]]; then
+            die "Could not prepare directory target for merge restore: $target"
+        fi
+
+        mkdir -p "$target"
+    else
+        if [[ -d "$target" && ! -L "$target" ]]; then
+            die "Refusing to replace existing directory with non-directory restore target: $target"
+        fi
+
+        if [[ -e "$target" || -L "$target" ]]; then
+            rm -f -- "$target"
+        fi
+    fi
+}
+
+sync_restore_path_merge() {
+    local source="$1"
+    local target="$2"
+
+    mkdir -p "$(dirname "$target")"
+    prepare_target_for_merge_restore "$source" "$target"
+
+    if [[ -d "$source" && ! -L "$source" ]]; then
+        rsync -a "$source"/ "$target"/
+    else
+        rsync -a "$source" "$target"
+    fi
+}
+
+sync_restore_path_force() {
+    local source="$1"
+    local target="$2"
+
+    mkdir -p "$(dirname "$target")"
+    prepare_target_for_force_restore "$source" "$target"
+
+    if [[ -d "$source" && ! -L "$source" ]]; then
+        rsync -a --delete "$source"/ "$target"/
+    else
+        rsync -a "$source" "$target"
+    fi
+}
+
+normalize_rel_path() {
+    local rel="$1"
+
+    [[ -n "$rel" ]] || die "Encountered empty relative path."
+    [[ "$rel" != /* ]] || die "Path must be home-relative, got absolute path: $rel"
+    [[ "$rel" != "." ]] || die "Refusing ambiguous path: ."
+    [[ "$rel" != ".." ]] || die "Refusing ambiguous path: .."
+    [[ "$rel" != *"/../"* ]] || die "Refusing parent traversal in path: $rel"
+    [[ "$rel" != ../* ]] || die "Refusing parent traversal in path: $rel"
+    [[ "$rel" != *"/.." ]] || die "Refusing parent traversal in path: $rel"
+    [[ "$rel" != "-" ]] || die 'Invalid dataset path: "-"'
+
+    printf '%s\n' "$rel"
+}
+
+run_restore_hook() {
+    local dataset_name="${1:-}"
+    local hook_name="${2:-}"
+
+    [[ -n "$dataset_name" ]] || die "run_restore_hook called without dataset name."
+    [[ -n "$hook_name" ]] || return 0
+
+    declare -F "$hook_name" >/dev/null 2>&1 \
+        || die "Restore hook for dataset '$dataset_name' is not defined: $hook_name"
+
+    "$hook_name" "$dataset_name"
+}
+
+is_valid_unit_dir() {
+    local unit_dir="$1"
+
+    [[ -d "$unit_dir" ]] || return 1
+    [[ -d "$unit_dir/metadata" ]] || return 1
+    [[ -d "$unit_dir/home" ]] || return 1
+    [[ -f "$unit_dir/metadata/install.json" ]] || return 1
+
+    return 0
+}
+
+list_valid_unit_dirs() {
+    local dir
+    for dir in "$XMIRROR_ROOT"/*; do
+        [[ -e "$dir" ]] || continue
+        is_valid_unit_dir "$dir" || continue
+        printf '%s\n' "$dir"
+    done
+}
+
+unit_created_at() {
+    local unit_dir="$1"
+    local metadata_file="$unit_dir/metadata/install.json"
+
+    sed -n 's/^[[:space:]]*"created_at":[[:space:]]*"\([^"]*\)".*$/\1/p' "$metadata_file" | head -n1
+}
+
+unit_install_id() {
+    local unit_dir="$1"
+    local metadata_file="$unit_dir/metadata/install.json"
+
+    sed -n 's/^[[:space:]]*"install_id":[[:space:]]*"\([^"]*\)".*$/\1/p' "$metadata_file" | head -n1
+}
+
+resolve_unit_dir() {
+    local unit_name="$1"
+    local unit_dir="$XMIRROR_ROOT/$unit_name"
+
+    is_valid_unit_dir "$unit_dir" || die "Invalid or missing install unit: $unit_name"
+    printf '%s\n' "$unit_dir"
+}
+
+select_unit_with_fzf() {
+    require_cmd fzf
+
+    local lines
+    lines="$(
+        while IFS= read -r unit_dir; do
+            local install_id created_at
+            install_id="$(unit_install_id "$unit_dir")"
+            created_at="$(unit_created_at "$unit_dir")"
+
+            [[ -n "$install_id" ]] || continue
+            [[ -n "$created_at" ]] || continue
+
+            printf '%s\t%s\n' "$created_at" "$install_id"
+        done < <(list_valid_unit_dirs) | sort -r
+    )"
+
+    [[ -n "$lines" ]] || die "No valid install units found under $XMIRROR_ROOT"
+
+    local selected
+    selected="$(
+        printf '%s\n' "$lines" | \
+        fzf --with-nth=2 --delimiter=$'\t' --prompt='Select install unit: '
+    )"
+
+    [[ -n "$selected" ]] || die "No install unit selected."
+
+    printf '%s\n' "${selected#*$'\t'}"
+}
+
+restore_one_dataset_safe() {
+    local unit_dir="$1"
+    local dataset_name="$2"
+    local rel="$3"
+    local pre_hook="$4"
+    local post_hook="$5"
+    local require_source="${6:-0}"
+
+    local source target
+    rel="$(normalize_rel_path "$rel")"
+    source="$unit_dir/home/$rel"
+    target="$HOME/$rel"
+
+    if [[ ! -e "$source" && ! -L "$source" ]]; then
+        if [[ "$require_source" == "1" ]]; then
+            die "Dataset '$dataset_name' is not present in unit: $source"
+        fi
+        return 0
+    fi
+
+    run_restore_hook "$dataset_name" "$pre_hook"
+
+    if [[ -e "$target" || -L "$target" ]]; then
+        printf 'xrestore: conflict, skipping dataset %s (%s)\n' "$dataset_name" "$rel" >&2
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$target")"
+
+    if [[ -d "$source" && ! -L "$source" ]]; then
+        mkdir -p "$target"
+        rsync -a "$source"/ "$target"/
+    else
+        rsync -a "$source" "$target"
+    fi
+
+    run_restore_hook "$dataset_name" "$post_hook"
+}
+
+restore_one_dataset_force() {
+    local unit_dir="$1"
+    local dataset_name="$2"
+    local rel="$3"
+    local pre_hook="$4"
+    local post_hook="$5"
+    local require_source="${6:-0}"
+
+    local source target
+    rel="$(normalize_rel_path "$rel")"
+    source="$unit_dir/home/$rel"
+    target="$HOME/$rel"
+
+    if [[ ! -e "$source" && ! -L "$source" ]]; then
+        if [[ "$require_source" == "1" ]]; then
+            die "Dataset '$dataset_name' is not present in unit: $source"
+        fi
+        return 0
+    fi
+
+    run_restore_hook "$dataset_name" "$pre_hook"
+
+    sync_restore_path_force "$source" "$target"
+
+    run_restore_hook "$dataset_name" "$post_hook"
+}
+
+restore_one_dataset_merge() {
+    local unit_dir="$1"
+    local dataset_name="$2"
+    local rel="$3"
+    local pre_hook="$4"
+    local post_hook="$5"
+    local require_source="${6:-0}"
+
+    local source target
+    rel="$(normalize_rel_path "$rel")"
+    source="$unit_dir/home/$rel"
+    target="$HOME/$rel"
+
+    if [[ ! -e "$source" && ! -L "$source" ]]; then
+        if [[ "$require_source" == "1" ]]; then
+            die "Dataset '$dataset_name' is not present in unit: $source"
+        fi
+        return 0
+    fi
+
+    run_restore_hook "$dataset_name" "$pre_hook"
+
+    sync_restore_path_merge "$source" "$target"
+
+    run_restore_hook "$dataset_name" "$post_hook"
+}
+
+cmd_list_datasets() {
+    load_dataset_config
+    validate_datasets
+
+    local i
+    for i in "${!DATASET_NAMES[@]}"; do
+        printf '%s\t%s\n' "${DATASET_NAMES[$i]}" "${DATASET_PATHS[$i]}"
+    done
+}
+
+cmd_list_units() {
+    require_env
+
+    local lines
+    lines="$(
+        while IFS= read -r unit_dir; do
+            printf '%s\t%s\n' "$(unit_created_at "$unit_dir")" "$(unit_install_id "$unit_dir")"
+        done < <(list_valid_unit_dirs) | sort -r
+    )"
+
+    [[ -n "$lines" ]] || die "No valid install units found under $XMIRROR_ROOT"
+    printf '%s\n' "$lines"
+}
+
+cmd_restore() {
+    require_env
+    require_cmd rsync
+    load_dataset_config
+    load_restore_hooks
+    validate_datasets
+
+    local mode=""
+    local unit=""
+    local dataset=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --mode)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --mode"
+                mode="$1"
+                ;;
+            --unit)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --unit"
+                unit="$1"
+                ;;
+            --dataset)
+                shift
+                [[ $# -gt 0 ]] || die "Missing value for --dataset"
+                dataset="$1"
+                ;;
+            *)
+                die "Unknown argument for restore: $1"
+                ;;
+        esac
+        shift
+    done
+
+    [[ -n "$mode" ]] || die "Restore mode is required. Use --mode safe, --mode merge, or --mode force."
+
+    case "$mode" in
+        safe|merge|force) ;;
+        *) die "Invalid restore mode: $mode. Use safe, merge, or force." ;;
+    esac
+
+    if [[ -z "$unit" ]]; then
+        unit="$(select_unit_with_fzf)"
+    fi
+
+    local unit_dir
+    unit_dir="$(resolve_unit_dir "$unit")"
+
+    printf 'xrestore: selected unit: %s\n' "$unit" >&2
+    printf 'xrestore: mode: %s\n' "$mode" >&2
+
+    if [[ -n "$dataset" ]]; then
+        local idx
+        idx="$(find_dataset_index_by_name "$dataset")" \
+            || die "Unknown dataset: $dataset"
+
+        printf 'xrestore: dataset: %s\n' "$dataset" >&2
+
+        case "$mode" in
+            safe)
+                restore_one_dataset_safe \
+                    "$unit_dir" \
+                    "${DATASET_NAMES[$idx]}" \
+                    "${DATASET_PATHS[$idx]}" \
+                    "${DATASET_PRE_RESTORE_HOOKS[$idx]}" \
+                    "${DATASET_POST_RESTORE_HOOKS[$idx]}" \
+                    1
+                ;;
+            merge)
+                restore_one_dataset_merge \
+                    "$unit_dir" \
+                    "${DATASET_NAMES[$idx]}" \
+                    "${DATASET_PATHS[$idx]}" \
+                    "${DATASET_PRE_RESTORE_HOOKS[$idx]}" \
+                    "${DATASET_POST_RESTORE_HOOKS[$idx]}" \
+                    1
+                ;;
+            force)
+                restore_one_dataset_force \
+                    "$unit_dir" \
+                    "${DATASET_NAMES[$idx]}" \
+                    "${DATASET_PATHS[$idx]}" \
+                    "${DATASET_PRE_RESTORE_HOOKS[$idx]}" \
+                    "${DATASET_POST_RESTORE_HOOKS[$idx]}" \
+                    1
+                ;;
+        esac
+    else
+        local i count
+        count="$(dataset_count)"
+
+        for (( i=0; i<count; i++ )); do
+            case "$mode" in
+                safe)
+                    restore_one_dataset_safe \
+                        "$unit_dir" \
+                        "${DATASET_NAMES[$i]}" \
+                        "${DATASET_PATHS[$i]}" \
+                        "${DATASET_PRE_RESTORE_HOOKS[$i]}" \
+                        "${DATASET_POST_RESTORE_HOOKS[$i]}"
+                    ;;
+                merge)
+                    restore_one_dataset_merge \
+                        "$unit_dir" \
+                        "${DATASET_NAMES[$i]}" \
+                        "${DATASET_PATHS[$i]}" \
+                        "${DATASET_PRE_RESTORE_HOOKS[$i]}" \
+                        "${DATASET_POST_RESTORE_HOOKS[$i]}"
+                    ;;
+                force)
+                    restore_one_dataset_force \
+                        "$unit_dir" \
+                        "${DATASET_NAMES[$i]}" \
+                        "${DATASET_PATHS[$i]}" \
+                        "${DATASET_PRE_RESTORE_HOOKS[$i]}" \
+                        "${DATASET_POST_RESTORE_HOOKS[$i]}"
+                    ;;
+            esac
+        done
+    fi
+
+    printf '%s\n' "$unit"
+}
+
+usage() {
+    cat <<'EOF'
+Usage:
+  xrestore list-units
+  xrestore list-datasets
+  xrestore restore --mode safe  [--unit INSTALL_ID] [--dataset DATASET]
+  xrestore restore --mode merge [--unit INSTALL_ID] [--dataset DATASET]
+  xrestore restore --mode force [--unit INSTALL_ID] [--dataset DATASET]
+EOF
+}
+
+main() {
+    local cmd="${1:-}"
+
+    case "$cmd" in
+        list-units)
+            shift
+            [[ $# -eq 0 ]] || die "list-units takes no arguments."
+            cmd_list_units
+            ;;
+        list-datasets)
+            shift
+            [[ $# -eq 0 ]] || die "list-datasets takes no arguments."
+            cmd_list_datasets
+            ;;
+        restore)
+            shift
+            cmd_restore "$@"
+            ;;
+        ""|-h|--help|help)
+            usage
+            ;;
+        *)
+            die "Unknown command: $cmd"
+            ;;
+    esac
+}
+
+main "$@"

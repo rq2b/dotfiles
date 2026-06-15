@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="${1:-}"
+TARGET="${2:-}"
+
+# Adjust these if needed
+STREAM_URL="http://127.0.0.1:8888/live/obs/"
+OBS_WORKSPACE="special:share"     # or "2" or whatever you prefer
+APP_WORKSPACE="5"
+TEAMS_WORKSPACE="4"
+MAIN_WORKSPACE="1"
+
+CHROMIUM_BIN="chromium"
+CHROMIUM_ROOT="$HOME/.config/chromium-school-courses"
+
+PROFILE_SCHOOL="Profile 2"
+PROFILE_COURSES="Profile 1"
+
+APP_NAME_SCHOOL="teams-school.desktop"
+APP_NAME_COURSES="teams-courses.desktop"
+
+STREAM_APP_SCHOOL="screensharing-school.desktop"
+STREAM_APP_COURSES="screensharing-courses.desktop"
+
+notify() {
+  command -v notify-send >/dev/null 2>&1 && notify-send "Screenshare" "$1" || true
+}
+
+wait_for_port() {
+  local host="$1"
+  local port="$2"
+  local tries="${3:-40}"
+
+  for ((i=0; i<tries; i++)); do
+    if bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null; then
+      exec 3<&-
+      exec 3>&-
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  return 1
+}
+
+ensure_profile_root() {
+  mkdir -p "$CHROMIUM_ROOT"
+}
+
+start_mediamtx() {
+  systemctl --user start mediamtx
+}
+
+stop_mediamtx() {
+  systemctl --user stop mediamtx || true
+}
+
+start_obs() {
+  # Launch OBS on chosen workspace.
+  hyprctl dispatch workspace "$OBS_WORKSPACE"
+  # If your OBS supports it, this is ideal:
+  nohup obs --startstreaming >/dev/null 2>&1 &
+}
+
+stop_obs() {
+  pkill -x obs || true
+}
+
+launch_desktop_file() {
+  local desktop_file="$1"
+  nohup gtk-launch "${desktop_file%.desktop}" >/dev/null 2>&1 &
+}
+
+open_stream_app_direct() {
+  local profile="$1"
+
+  nohup "$CHROMIUM_BIN" \
+    --new-window \
+    --user-data-dir="$CHROMIUM_ROOT" \
+    --profile-directory="$profile" \
+    --app="$STREAM_URL" \
+    --start-fullscreen \
+    >/dev/null 2>&1 &
+}
+
+open_teams_direct() {
+  local profile="$1"
+
+  nohup "$CHROMIUM_BIN" \
+    --disable-gpu \
+    --new-window \
+    --user-data-dir="$CHROMIUM_ROOT" \
+    --profile-directory="$profile" \
+    --app="https://teams.microsoft.com" \
+    >/dev/null 2>&1 &
+}
+
+start_flow() {
+  local target="$1"
+  local profile
+  local stream_desktop
+  local app_desktop
+
+  case "$target" in
+    school)
+      profile="$PROFILE_SCHOOL"
+      stream_desktop="$STREAM_APP_SCHOOL"
+      app_desktop="$APP_NAME_SCHOOL"
+      ;;
+    courses)
+      profile="$PROFILE_COURSES"
+      stream_desktop="$STREAM_APP_COURSES"
+      app_desktop="$APP_NAME_COURSES"
+      ;;
+    *)
+      echo "Usage: screenshare start {school|courses}"
+      exit 1
+      ;;
+  esac
+
+  ensure_profile_root
+
+  start_mediamtx
+
+  if ! wait_for_port 127.0.0.1 8888 50; then
+    notify "MediaMTX did not come up on port 8888"
+    echo "MediaMTX did not start correctly."
+    exit 1
+  fi
+
+  start_obs
+  sleep 3
+
+  hyprctl dispatch workspace "$APP_WORKSPACE"
+  sleep 0.5
+
+  # Either use direct Chromium commands...
+  open_stream_app_direct "$profile"
+  sleep 1
+
+  hyprctl dispatch workspace "$MAIN_WORKSPACE"
+
+  # ...or use your desktop launchers instead:
+  # launch_desktop_file "$stream_desktop"
+  # sleep 1
+  # launch_desktop_file "$app_desktop"
+
+  notify "Screenshare environment ready for $target"
+  echo "Ready. Final share-picker confirmation still must be done manually."
+}
+
+stop_flow() {
+  pkill -f '127.0.0.1:8888/live/obs/' || true
+  pkill -f 'https://teams.microsoft.com' || true
+  stop_obs
+  stop_mediamtx
+  hyprctl dispatch workspace "$MAIN_WORKSPACE"
+  notify "Screenshare environment stopped"
+}
+
+case "$MODE" in
+  start)
+    start_flow "$TARGET"
+    ;;
+  stop)
+    stop_flow
+    ;;
+  *)
+    echo "Usage:"
+    echo "  screenshare start {school|courses}"
+    echo "  screenshare stop"
+    exit 1
+    ;;
+esac

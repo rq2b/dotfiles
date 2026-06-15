@@ -1,0 +1,3 @@
+# 	name				path				pre_mirror	post_mirror	pre_restore					post_restore					excludes
+	ssh					.ssh				-			-			-							notify_restore_complete			agent/,*.sock
+	syncthing-state	.local/state/syncthing	-			-			stop_syncthing				notify_restore_complete			-

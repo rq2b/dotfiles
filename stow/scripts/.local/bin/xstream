@@ -1,0 +1,114 @@
+#!/bin/bash
+
+# metadata
+XMETA="stream monitor screenshots over local HTTP"
+
+if [[ "${1:-}" == "--meta" ]]; then
+    echo "$XMETA"
+    exit 0
+fi
+
+set -euo pipefail
+
+PIDFILE="/tmp/xstream.pid"
+DIR="/tmp/xstream"
+PORT=8080
+MONITOR="DP-1"
+
+log() {
+    echo "[xstream] $*"
+}
+
+start() {
+    if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        log "Already running (PID $(cat "$PIDFILE"))"
+        exit 1
+    fi
+
+    mkdir -p "$DIR"
+
+    # create auto-refresh page
+    cat > "$DIR/index.html" <<'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { margin: 0; background: black; }
+img { width: 100vw; height: 100vh; object-fit: contain; }
+</style>
+</head>
+<body>
+<img id="img" src="screen.jpg">
+<script>
+setInterval(() => {
+  document.getElementById("img").src = "screen.jpg?t=" + Date.now();
+}, 1000);
+</script>
+</body>
+</html>
+EOF
+
+    log "Starting screenshot loop + server..."
+
+    setsid bash -c "
+    export WAYLAND_DISPLAY=wayland-1
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+
+    while true; do
+        grim -o '$MONITOR' -t jpeg -q 50 '$DIR/screen.jpg'
+        sleep 1
+    done
+	" >/dev/null 2>&1 &
+
+    LOOP_PID=$!
+
+    setsid bash -c "
+        cd '$DIR'
+        python3 -m http.server $PORT
+    " >/dev/null 2>&1 &
+
+    SERVER_PID=$!
+
+    echo "$LOOP_PID $SERVER_PID" > "$PIDFILE"
+
+    log "Started (loop=$LOOP_PID, server=$SERVER_PID)"
+    log "Open: http://$(hostname -I | awk '{print $1}'):$PORT"
+}
+
+stop() {
+    if [[ ! -f "$PIDFILE" ]]; then
+        log "Not running"
+        exit 1
+    fi
+
+    read -r LOOP_PID SERVER_PID < "$PIDFILE"
+
+    log "Stopping..."
+    kill "$LOOP_PID" 2>/dev/null || true
+    kill "$SERVER_PID" 2>/dev/null || true
+
+    rm -f "$PIDFILE"
+    log "Stopped"
+}
+
+status() {
+    if [[ -f "$PIDFILE" ]]; then
+        read -r LOOP_PID SERVER_PID < "$PIDFILE"
+        if kill -0 "$LOOP_PID" 2>/dev/null && kill -0 "$SERVER_PID" 2>/dev/null; then
+            log "Running (loop=$LOOP_PID, server=$SERVER_PID)"
+            return
+        fi
+    fi
+    log "Not running"
+}
+
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    restart) stop; start ;;
+    *)
+        echo "Usage: xstream {start|stop|status|restart}"
+        ;;
+esac

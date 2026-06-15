@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Name=Teams [School]
+Comment=Microsoft Teams
+Exec=teams-school
+Terminal=false
+Type=Application
+Icon=teams-school-icon
+StartupNotify=true
+Categories=Network;
+StartupWMClass=crx

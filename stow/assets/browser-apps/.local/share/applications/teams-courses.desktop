@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Name=Teams [Courses]
+Comment=Microsoft Teams
+Exec=teams-courses
+Terminal=false
+Type=Application
+Icon=teams-courses-icon
+StartupNotify=true
+Categories=Network;
+StartupWMClass=crx

@@ -14,3 +14,5 @@
 .local/share/Trash/
 .DS_Store
 *.swp
+
+datasets.tab

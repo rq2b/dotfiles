@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Windows [bootup]
+Comment=Windows [bootup]
+Exec=omarchy-launch-webapp http://127.0.0.1:8006
+Terminal=false
+Type=Application
+Icon=windows-bootup-icon
+StartupNotify=true
+Categories=System;

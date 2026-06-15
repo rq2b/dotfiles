@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Screensharing [School]
+Comment=Screensharing
+Exec=screensharing-school
+Terminal=false
+Type=Application
+Icon=screenshare-school-icon
+StartupNotify=true
+Categories=Network;

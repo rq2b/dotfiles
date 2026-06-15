@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Screensharing [Courses]
+Comment=Screensharing
+Exec=screensharing-courses
+Terminal=false
+Type=Application
+Icon=screenshare-courses-icon
+StartupNotify=true
+Categories=Network;

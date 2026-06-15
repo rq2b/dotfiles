@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=TinkerCAD
+Comment=TinkerCAD
+Exec=omarchy-launch-webapp https://www.tinkercad.com/dashboard/designs/circuits
+Terminal=false
+Type=Application
+Icon=tinkercad-icon
+StartupNotify=true
+Categories=Education;

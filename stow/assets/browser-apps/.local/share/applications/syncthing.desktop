@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Syncthing
+Comment=Syncthing
+Exec=omarchy-launch-webapp https://127.0.0.1:8384
+Terminal=false
+Type=Application
+Icon=syncthing-icon
+StartupNotify=true
+Categories=AudioVideo;

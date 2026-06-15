@@ -68,28 +68,34 @@ print_tilde_path() {
     fi
 }
 
+find_packages() {
+    find "$stow_root" \
+        -mindepth 2 \
+        -maxdepth 2 \
+        -type d \
+        -printf '%P\n' |
+        sort
+}
+
 detect_stow_root() {
-    local cwd
-    cwd="$(normalize_path "$(pwd)")"
+    local current
+    current="$(normalize_path "$(pwd)")"
 
-    if [[ -d "$cwd/stow" ]]; then
-        repo_root="$cwd"
-        stow_root="$(normalize_path "$cwd/stow")"
-        return
-    fi
+    while [[ "$current" != "/" ]]; do
+        if [[ "$(basename "$current")" == *dotfiles* ]]; then
+            stow_root="$current"
+            return
+        fi
 
-    if [[ "$(basename "$cwd")" == "stow" ]]; then
-        repo_root="$(dirname "$cwd")"
-        stow_root="$cwd"
-        return
-    fi
+        current="$(dirname "$current")"
+    done
 
-    die "run from repo root or from the stow directory"
+    die "run from somewhere inside a dotfiles repository"
 }
 
 list_packages() {
     printf 'Packages\n'
-    find "$stow_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+    find_packages
 }
 
 collect_packages_from_args() {
@@ -129,7 +135,7 @@ collect_packages_from_args() {
     if (( select_all )); then
         while IFS= read -r pkg; do
             packages+=("$pkg")
-        done < <(find "$stow_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+        done < <(find_packages)
     fi
 
     ((${#packages[@]} > 0)) || die "no packages selected"

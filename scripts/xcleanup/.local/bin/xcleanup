@@ -68,11 +68,25 @@ print_tilde_path() {
     fi
 }
 
+find_package_files() {
+    find . \
+        \( \
+            -name .git \
+            -o -name .github \
+            -o -name .hg \
+            -o -name .svn \
+        \) -prune -o \
+        -mindepth 1 \
+        \( -type f -o -type l \) \
+        -printf '%P\0'
+}
+
 find_packages() {
     find "$stow_root" \
         -mindepth 2 \
         -maxdepth 2 \
         -type d \
+        ! -name '.*' \
         -printf '%P\n' |
         sort
 }
@@ -187,7 +201,8 @@ collect_records() {
             fi
         done < <(
             cd "$pkg_root" &&
-            find . -mindepth 1 \( -type f -o -type l \) -printf '%P\0' | sort -z
+              find_package_files | sort -z
+
         )
     done
 }

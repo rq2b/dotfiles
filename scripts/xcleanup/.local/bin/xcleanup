@@ -70,13 +70,17 @@ print_tilde_path() {
 
 find_package_files() {
     find . \
-        \( \
-            -name .git \
-            -o -name .github \
-            -o -name .hg \
-            -o -name .svn \
-        \) -prune -o \
         -mindepth 1 \
+        \( \
+            -type d \
+            \( \
+                -name .git \
+                -o -name .github \
+                -o -name .hg \
+                -o -name .svn \
+            \) \
+            -prune \
+        \) -o \
         \( -type f -o -type l \) \
         -printf '%P\0'
 }
@@ -86,9 +90,8 @@ find_packages() {
         -mindepth 2 \
         -maxdepth 2 \
         -type d \
-        ! -name '.*' \
         -printf '%P\n' |
-        sort
+        grep -vE '^\.'
 }
 
 detect_stow_root() {

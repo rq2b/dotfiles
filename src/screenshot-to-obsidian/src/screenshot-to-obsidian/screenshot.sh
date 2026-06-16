@@ -132,5 +132,5 @@ grim -g "$SELECTION" "$TMP_PATH" || exit 1
 hyprctl dispatch exec \
   "[float; size 430 250; center 1] \
    kitty --class screenshot-gum \
-   -e $HOME/Scripts/screenshot-to-obsidian/screenshot-gum-menu.sh \
+   -e $HOME/src/screenshot-to-obsidian/screenshot-gum-menu.sh \
    $TMP_PATH $IMG_NAME"

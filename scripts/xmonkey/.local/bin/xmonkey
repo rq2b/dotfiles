@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-SCRIPT="$HOME/Scripts/monkeytype/monkeytype-summary.py"
+SCRIPT="$HOME/src/monkeytype/monkeytype-summary.py"
 
 META="summarise Monkeytype CSV exports by test type"
 

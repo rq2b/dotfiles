@@ -1,8 +1,8 @@
 #!/bin/bash
 set -uo pipefail
 
-GET_INFO="$HOME/Scripts/screenshot-to-obsidian/get-obsidian-title.sh"
-APPEND_LINK="$HOME/Scripts/screenshot-to-obsidian/append-obsidian-image.sh"
+GET_INFO="$HOME/src/screenshot-to-obsidian/get-obsidian-title.sh"
+APPEND_LINK="$HOME/src/screenshot-to-obsidian/append-obsidian-image.sh"
 
 TMP_PATH="$1"
 IMG_NAME="$2"

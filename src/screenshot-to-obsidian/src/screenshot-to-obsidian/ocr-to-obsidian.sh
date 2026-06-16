@@ -6,8 +6,8 @@ TMP_PATH="${1:?Usage: ocr-to-obsidian.sh /tmp/file.png}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 OCR_PY="$SCRIPT_DIR/main.py"
 
-GET_NOTE="$HOME/Scripts/screenshot-to-obsidian/get-obsidian-title.sh"
-APPEND="$HOME/Scripts/screenshot-to-obsidian/append-obsidian-image.sh"
+GET_NOTE="$HOME/src/screenshot-to-obsidian/get-obsidian-title.sh"
+APPEND="$HOME/src/screenshot-to-obsidian/append-obsidian-image.sh"
 
 [[ -f "$TMP_PATH" ]] || { echo "Error: temp image not found: $TMP_PATH" >&2; exit 1; }
 [[ -x "$GET_NOTE" ]] || { echo "Error: missing executable: $GET_NOTE" >&2; exit 1; }

@@ -10,7 +10,7 @@ fi
 
 set -euo pipefail
 
-BASE="/home/staging/Syncthing/core/Media/gpt-context"
+BASE="~/Syncthing/core/Media/gpt-context"
 COLD="$BASE/cold"
 
 show_help() {

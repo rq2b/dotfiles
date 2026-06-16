@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage: $0 <file>"
+    exit 1
+fi
+
+file="$1"
+
+if [[ ! -f "$file" ]]; then
+    echo "Error: File not found: $file"
+    exit 1
+fi
+
+# Remove patterns like:
+#  :contentReference[oaicite:6]{index=6}
+# directly in-place
+
+sed -E -i \
+'s/[[:space:]]*:contentReference\[oaicite:[0-9]+\]\{index=[0-9]+\}//g' \
+"$file"

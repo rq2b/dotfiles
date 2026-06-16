@@ -6,11 +6,12 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Iterator, Sequence
 
 META = "validate and clean stow-managed filesystem state"
 REPO_ROOT_NAMES = {"dotfiles", "private-dotfiles"}
 IGNORED_DIRECTORY_NAMES = {".git", ".github", ".hg", ".svn"}
+IGNORED_FILE_NAMES = {".stow-local-ignore", ".gitignore", ".pyc"}
 
 
 class LeafState(str, Enum):
@@ -28,6 +29,13 @@ class ParentKind(str, Enum):
     PARENT_IS_FILE = "parent_is_file"
     PARENT_IS_OTHER = "parent_is_other"
     MISSING_PARENTS_START_AT = "missing_parents_start_at"
+
+
+class CheckStatus(str, Enum):
+    OK = "OK"
+    MISSING = "MISSING"
+    CONFLICT = "CONFLICT"
+    BROKEN = "BROKEN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,23 +206,33 @@ def collect_package_specs(context: RepositoryContext) -> list[PackageSpec]:
 
 def iter_package_files(package_root: Path) -> Iterator[Path]:
     for dirpath, dirnames, filenames in os.walk(
-        package_root, topdown=True, followlinks=False
+        package_root,
+        topdown=True,
+        followlinks=False,
     ):
         current_dir = Path(dirpath)
 
         pruned_dirnames: list[str] = []
         for dirname in sorted(dirnames):
             child_path = current_dir / dirname
+
             if dirname in IGNORED_DIRECTORY_NAMES:
                 continue
+
             if child_path.is_symlink():
                 yield child_path.relative_to(package_root)
                 continue
+
             pruned_dirnames.append(dirname)
+
         dirnames[:] = pruned_dirnames
 
         for filename in sorted(filenames):
+            if filename in IGNORED_FILE_NAMES:
+                continue
+
             child_path = current_dir / filename
+
             if child_path.is_file() or child_path.is_symlink():
                 yield child_path.relative_to(package_root)
 
@@ -261,6 +279,36 @@ def classify_parent_status(target_path: Path) -> ParentStatus:
         return ParentStatus(ParentKind.MISSING_PARENTS_START_AT, path)
 
     return ParentStatus(ParentKind.OK, None)
+
+
+def classify_check_status(
+    leaf_state: LeafState,
+    parent_status: ParentStatus,
+) -> CheckStatus:
+
+    if parent_status.kind in {
+        ParentKind.PARENT_IS_FILE,
+        ParentKind.PARENT_IS_SYMLINK,
+        ParentKind.PARENT_IS_OTHER,
+    }:
+        return CheckStatus.BROKEN
+
+    if leaf_state is LeafState.CORRECT_SYMLINK:
+        return CheckStatus.OK
+
+    if leaf_state is LeafState.MISSING and parent_status.kind in {
+        ParentKind.OK,
+        ParentKind.MISSING_PARENTS_START_AT,
+    }:
+        return CheckStatus.MISSING
+
+    if leaf_state in {
+        LeafState.WRONG_SYMLINK,
+        LeafState.REAL_FILE,
+    }:
+        return CheckStatus.CONFLICT
+
+    return CheckStatus.BROKEN
 
 
 def ensure_parent_dirs(target_path: Path) -> bool:
@@ -435,19 +483,22 @@ def print_check_records(records: Sequence[PackageRecord]) -> None:
         leaf_state = classify_leaf_state(record.target_path, source_path)
         parent_status = classify_parent_status(record.target_path)
 
-        status = "OK" if parent_status.kind is ParentKind.OK else "ERROR"
+        status = classify_check_status(
+            leaf_state,
+            parent_status,
+        )
         target_text = printable_path(record.target_path)
 
         if parent_status.kind is ParentKind.OK:
             print(
-                f"{status}\t{record.package.display_name}\t{target_text}\t{leaf_state.value}\tok"
+                f"{status.value}\t{record.package.display_name}\t{target_text}\t{leaf_state.value}\tok"
             )
         else:
             parent_text = (
                 printable_path(parent_status.path) if parent_status.path else "-"
             )
             print(
-                f"{status}\t{record.package.display_name}\t{target_text}\t{leaf_state.value}\t"
+                f"{status.value}\t{record.package.display_name}\t{target_text}\t{leaf_state.value}\t"
                 f"{parent_status.kind.value}: {parent_text}"
             )
 
@@ -465,23 +516,14 @@ def apply_records(records: Sequence[PackageRecord]) -> None:
         leaf_state = classify_leaf_state(record.target_path, source_path)
         parent_status = classify_parent_status(record.target_path)
 
-        if parent_status.kind not in {
-            ParentKind.OK,
-            ParentKind.MISSING_PARENTS_START_AT,
-        }:
+        status = classify_check_status(
+            leaf_state,
+            parent_status,
+        )
+
+        if status.value is CheckStatus.BROKEN:
             print(
                 f"ERROR\t{printable_path(record.target_path)} : {parent_status.kind.value}"
-            )
-            errors = 1
-
-        if leaf_state not in {
-            LeafState.CORRECT_SYMLINK,
-            LeafState.MISSING,
-            LeafState.WRONG_SYMLINK,
-            LeafState.REAL_FILE,
-        }:
-            print(
-                f"ERROR\t{printable_path(record.target_path)} : leaf is {leaf_state.value}"
             )
             errors = 1
 

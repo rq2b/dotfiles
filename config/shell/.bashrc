@@ -17,12 +17,60 @@ alias striprefs="perl -0777 -i -pe 's/\s*:contentReference\[oaicite:\d+\]\{index
 alias ctx="xctx"
 alias ncat="xcat"
 
-download-opus() {
-  yt-dlp -f "bestaudio[ext=webm]/bestaudio" \
-    --extract-audio --audio-format opus --audio-quality 0 \
-    --embed-metadata --embed-thumbnail \
-    --parse-metadata "%(title)s:%(meta_title)s" \
-    -o "%(title)s.%(ext)s" "$@"
+# yt music -> opus file / playlist
+ytopus() {
+  yt-dlp \
+    -f "bestaudio[ext=webm]/bestaudio" \
+    --extract-audio \
+    --audio-format opus \
+    --audio-quality 0 \
+    --embed-metadata \
+    --embed-thumbnail \
+    -o "%(title)s.%(ext)s" \
+    "$@"
+}
+
+ytopus-playlist() {
+  yt-dlp \
+    -f "bestaudio[ext=webm]/bestaudio" \
+    --extract-audio \
+    --audio-format opus \
+    --audio-quality 0 \
+    --embed-metadata \
+    --embed-thumbnail \
+    -o "%(playlist_index)03d - %(title)s.%(ext)s" \
+    "$@"
+}
+
+ytopus-dir() {
+  local dest="$1"
+  shift
+
+  mkdir -p "$dest"
+
+  yt-dlp \
+    -f "bestaudio[ext=webm]/bestaudio" \
+    --extract-audio \
+    --audio-format opus \
+    --audio-quality 0 \
+    --embed-metadata \
+    --embed-thumbnail \
+    -o "$dest/%(playlist_index)03d - %(title)s.%(ext)s" \
+    "$@"
+}
+
+ytmusic-playlist() {
+  local url="$1"
+
+  yt-dlp \
+    -f "bestaudio[ext=webm]/bestaudio" \
+    --extract-audio \
+    --audio-format opus \
+    --audio-quality 0 \
+    --embed-metadata \
+    --embed-thumbnail \
+    -o "%(playlist_title)s/%(playlist_index)03d - %(title)s.%(ext)s" \
+    "$url"
 }
 
 yttxt() {

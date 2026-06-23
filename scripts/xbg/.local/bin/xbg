@@ -11,7 +11,12 @@ fi
 
 pkill -x swaybg || true
 
-HORIZONTAL="DP-1"
+HORIZONTAL=$(hyprctl monitors -j | jq -r '
+    .[]
+    | select(.description=="AOC 24G4 12VR1HA013617")
+    | .name
+')
+
 VERTICAL=$(hyprctl monitors -j | jq -r '
     .[]
     | select(.description=="LG Electronics LG FULL HD 0x01010101")

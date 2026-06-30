@@ -1,8 +1,8 @@
 [Desktop Entry]
-Version=1.0
-Name=Start Looking Glass
+Version=1.1
+Name=Launch Looking Glass
 Comment=Launch Looking Glass
-Exec=bash -lc '__NV_DISABLE_EXPLICIT_SYNC=1 detach looking-glass-client -g opengl && exit'
+Exec=env __NV_DISABLE_EXPLICIT_SYNC=1 /usr/bin/looking-glass-client -g opengl
 Terminal=false
 Type=Application
 Icon=looking-glass

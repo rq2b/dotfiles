@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# render-mode
+#
+# Releases the RTX 4070 from vfio-pci and rebinds it to the NVIDIA driver,
+# leaving the desktop running exclusively on the GTX 1650.
+#
+# Intended for Blender / CUDA / OptiX rendering after booting the VFIO profile.
+
+set -euo pipefail
+
+GPU="0000:01:00.0"
+AUDIO="0000:01:00.1"
+
+echo "==> Acquiring sudo credentials..."
+sudo -v
+
+echo
+echo "==> Releasing RTX 4070 from vfio-pci..."
+
+echo "$GPU"   | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind >/dev/null
+echo "$AUDIO" | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind >/dev/null
+
+echo
+echo "==> Clearing driver overrides..."
+
+echo "" | sudo tee /sys/bus/pci/devices/$GPU/driver_override >/dev/null
+echo "" | sudo tee /sys/bus/pci/devices/$AUDIO/driver_override >/dev/null
+
+echo
+echo "==> Reprobing devices..."
+
+echo "$GPU"   | sudo tee /sys/bus/pci/drivers_probe >/dev/null
+echo "$AUDIO" | sudo tee /sys/bus/pci/drivers_probe >/dev/null
+
+echo
+echo "==> Verifying..."
+
+lspci -k -s "$GPU"
+echo
+
+lspci -k -s "$AUDIO"
+echo
+
+nvidia-smi
+
+echo
+echo "✓ RTX 4070 is ready for compute workloads."

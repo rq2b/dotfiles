@@ -12,6 +12,11 @@ set -euo pipefail
 GPU="0000:01:00.0"
 AUDIO="0000:01:00.1"
 
+if ! grep -qw 'vfio_boot=1' /proc/cmdline; then
+    echo "Error: This system was not booted with the VFIO profile (vfio_boot=1)." >&2
+    exit 1
+fi
+
 echo "==> Acquiring sudo credentials..."
 sudo -v
 

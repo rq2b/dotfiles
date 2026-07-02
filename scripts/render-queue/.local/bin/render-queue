@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<EOF
 Usage:
-    render-queue JOB [JOB ...] [-- render-job-args...]
+    render-queue JOB [JOB ...] [-- render-job arguments...]
 
 Examples:
     render-queue \
@@ -15,55 +15,29 @@ Examples:
     render-queue \
         01-right-to-left \
         02-top-down \
-        -- --start-frame 500 --end-frame 1000
-
-Everything after '--' is passed directly to render-job.
+        -- \
+        --end-frame 500
 EOF
 }
 
-if [[ $# -eq 0 ]]; then
+[[ $# -gt 0 ]] || {
     usage
-    exit 1
-fi
-
-#
-# Split job names from render-job arguments.
-#
-jobs=()
-render_args=()
-
-parsing_jobs=true
-
-for arg in "$@"; do
-    if $parsing_jobs; then
-        if [[ "$arg" == "--" ]]; then
-            parsing_jobs=false
-        else
-            jobs+=("$arg")
-        fi
-    else
-        render_args+=("$arg")
-    fi
-done
-
-[[ ${#jobs[@]} -gt 0 ]] || {
-    echo "No jobs specified."
     exit 1
 }
 
-#
-# Automatically create our own tmux session if necessary.
-#
-if [[ -z "${TMUX:-}" ]]; then
-    exec tmux new-session \
-        -s render-queue \
-        "$0 $*"
-fi
+jobs=()
+render_args=()
 
-echo
-echo "Queue:"
-printf '  %s\n' "${jobs[@]}"
-echo
+while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--" ]]; then
+        shift
+        render_args=("$@")
+        break
+    fi
+
+    jobs+=("$1")
+    shift
+done
 
 for job in "${jobs[@]}"; do
     echo
@@ -76,18 +50,19 @@ for job in "${jobs[@]}"; do
 
     session="render_$job"
 
+    until tmux has-session -t "$session" 2>/dev/null; do
+        sleep 0.1
+    done
+
     tmux attach -t "$session"
 
     echo
-    echo "Job '$job' finished."
-    echo "Proceeding to the next job in 10 seconds..."
-    echo "Press Ctrl+C now to stop the queue."
-    echo
+    echo "Proceeding to the next job in 10 seconds."
+    echo "Press Ctrl+C to stop the queue."
+    echo "Press Enter to continue immediately."
 
-    sleep 10
+    read -r -t 10 || true
 done
 
 echo
-echo "========================================"
 echo "Queue complete."
-echo "========================================"

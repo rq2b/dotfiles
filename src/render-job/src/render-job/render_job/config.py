@@ -10,7 +10,7 @@ import shutil
 from .exceptions import RenderJobConfigurationError
 
 
-DEFAULT_BLENDER_ROOT = Path("/home/staging/blender")
+DEFAULT_BLENDER_ROOT = Path("/mnt/data/blender/")
 
 
 @dataclass(frozen=True, slots=True)

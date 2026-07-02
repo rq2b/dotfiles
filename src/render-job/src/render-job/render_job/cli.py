@@ -17,8 +17,8 @@ from .job import (
     build_job_paths,
     discover_blend_file,
     ensure_job_layout,
-    highest_existing_frame,
     normalize_job_name,
+    scan_existing_frames,
 )
 from .progress import build_preflight_summary
 from .tmux import (
@@ -89,11 +89,21 @@ def resolve_frames(
     scene_info,
     options: CliOptions,
 ) -> tuple[int, int]:
-    highest_existing = highest_existing_frame(job_paths.png_dir)
+    existing_frames = scan_existing_frames(job_paths.png_dir)
+    existing_set = set(existing_frames)
+
+    resume_floor = scene_info.frame_start
+    while resume_floor in existing_set:
+        resume_floor += 1
+
     if options.start_frame is not None:
-        start_frame = options.start_frame
+        requested_start = options.start_frame
     else:
-        start_frame = (highest_existing + 1) if highest_existing is not None else scene_info.frame_start
+        requested_start = scene_info.frame_start
+
+    start_frame = min(requested_start, resume_floor)
+    while start_frame in existing_set:
+        start_frame += 1
 
     if options.end_frame is not None:
         end_frame = options.end_frame
@@ -108,9 +118,12 @@ def resolve_frames(
     return start_frame, end_frame
 
 
-def build_output_file(job_paths: JobPaths, start_frame: int, end_frame: int) -> Path:
-    width = max(4, len(str(start_frame)), len(str(end_frame)))
-    return job_paths.render_dir / f"{start_frame:0{width}d}-{end_frame:0{width}d}.mp4"
+def build_output_file(job_paths: JobPaths, encode_start_frame: int, encode_end_frame: int) -> Path:
+    width = max(4, len(str(encode_start_frame)), len(str(encode_end_frame)))
+    return (
+        job_paths.render_dir
+        / f"{encode_start_frame:0{width}d}-{encode_end_frame:0{width}d}.mp4"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -133,7 +146,9 @@ def main(argv: list[str] | None = None) -> int:
         blend_file = discover_blend_file(job_paths)
         scene_info = query_scene_info(config.tools.blender, blend_file)
         start_frame, end_frame = resolve_frames(job_paths, scene_info, options)
-        output_file = build_output_file(job_paths, start_frame, end_frame)
+        existing_frames = scan_existing_frames(job_paths.png_dir)
+        encode_start_frame = min(existing_frames[0], start_frame) if existing_frames else start_frame
+        output_file = build_output_file(job_paths, encode_start_frame, end_frame)
 
         ffmpeg_executable = None if options.skip_encoding else resolve_ffmpeg()
 
@@ -166,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             fps=scene_info.fps_effective,
             skip_encoding=options.skip_encoding,
             output_file=output_file,
+            encode_start_frame=encode_start_frame,
             job_name=job_name,
         )
         write_launch_script(script_file, script_context)

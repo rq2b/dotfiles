@@ -10,7 +10,6 @@ from textwrap import dedent
 
 from .blender import build_blender_command
 from .encoding import EncodePlan, build_ffmpeg_command
-from .job import scan_existing_frames
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +26,7 @@ class LaunchScriptContext:
     fps: float
     skip_encoding: bool
     output_file: Path
+    encode_start_frame: int
     job_name: str
 
 
@@ -59,23 +59,11 @@ def write_launch_script(script_path: Path, context: LaunchScriptContext) -> None
         if context.ffmpeg_executable is None:
             raise ValueError("ffmpeg executable is required when encoding is enabled")
 
-        frames = scan_existing_frames(context.png_dir)
-
-        if not frames:
-            raise ValueError(f"No PNG frames found in {context.png_dir}.")
-
-        encode_start = frames[0]
-        encode_end = frames[-1]
-
-        encode_output = (
-            context.output_file.parent / f"{encode_start:04d}-{encode_end:04d}.mp4"
-        )
-
         encode_plan = EncodePlan(
             png_dir=context.png_dir,
             output_file=encode_output,
-            start_frame=encode_start,
-            end_frame=encode_end,
+            start_frame=context.encode_start_frame,
+            end_frame=context.end_frame,
             fps=context.fps,
         )
 

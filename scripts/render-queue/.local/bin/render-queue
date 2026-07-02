@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<EOF
+Usage:
+    render-queue JOB [JOB ...] [-- render-job-args...]
+
+Examples:
+    render-queue \
+        01-right-to-left \
+        02-top-down \
+        03-bottom-up
+
+    render-queue \
+        01-right-to-left \
+        02-top-down \
+        -- --start-frame 500 --end-frame 1000
+
+Everything after '--' is passed directly to render-job.
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+    usage
+    exit 1
+fi
+
+#
+# Split job names from render-job arguments.
+#
+jobs=()
+render_args=()
+
+parsing_jobs=true
+
+for arg in "$@"; do
+    if $parsing_jobs; then
+        if [[ "$arg" == "--" ]]; then
+            parsing_jobs=false
+        else
+            jobs+=("$arg")
+        fi
+    else
+        render_args+=("$arg")
+    fi
+done
+
+[[ ${#jobs[@]} -gt 0 ]] || {
+    echo "No jobs specified."
+    exit 1
+}
+
+#
+# Automatically create our own tmux session if necessary.
+#
+if [[ -z "${TMUX:-}" ]]; then
+    exec tmux new-session \
+        -s render-queue \
+        "$0 $*"
+fi
+
+echo
+echo "Queue:"
+printf '  %s\n' "${jobs[@]}"
+echo
+
+for job in "${jobs[@]}"; do
+    echo
+    echo "========================================"
+    echo "Starting job: $job"
+    echo "========================================"
+    echo
+
+    render-job "${render_args[@]}" "$job"
+
+    session="render_$job"
+
+    tmux attach -t "$session"
+
+    echo
+    echo "Job '$job' finished."
+    echo "Proceeding to the next job in 10 seconds..."
+    echo "Press Ctrl+C now to stop the queue."
+    echo
+
+    sleep 10
+done
+
+echo
+echo "========================================"
+echo "Queue complete."
+echo "========================================"

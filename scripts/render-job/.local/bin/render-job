@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT="$HOME/src/render-job"
+
+export PYTHONPATH="$PROJECT${PYTHONPATH:+:$PYTHONPATH}"
+
+exec python3 -m render_job "$@"

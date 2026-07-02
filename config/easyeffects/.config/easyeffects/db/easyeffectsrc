@@ -17,7 +17,7 @@ visiblePlugin=rnnoise#0
 mostUsedPresets=speakers-mono,headphones-stereo
 outputDevice=alsa_output.pci-0000_00_1f.3.analog-stereo
 plugins=loudness#0,equalizer#0,stereo_tools#0
-usedPresets=headphones-stereo:27,speakers-mono:106
+usedPresets=headphones-stereo:27,speakers-mono:107
 visiblePage=pluginsPage
 visiblePlugin=equalizer#0
 

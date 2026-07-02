@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "render-job"
+version = "0.1.0"
+description = "Crash-safe Blender render job launcher with tmux and NVENC encoding"
+requires-python = ">=3.11"
+
+[project.scripts]
+render-job = "render_job.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

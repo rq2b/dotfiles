@@ -50,11 +50,11 @@ for job in "${jobs[@]}"; do
 
     session="render_$job"
 
-    until tmux has-session -t "$session" 2>/dev/null; do
+    until tmux has-session -t "$session" &>/dev/null; do
         sleep 0.1
     done
 
-    tmux attach -t "$session"
+    tmux attach -t "$session" || true
 
     echo
     echo "Proceeding to the next job in 10 seconds."

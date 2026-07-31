@@ -1,227 +1,384 @@
 #!/usr/bin/env bash
 
-set -Eeuo pipefail
-
-XMETA="mount and manage encrypted persistent storage"
-
 if [[ "${1:-}" == "--meta" ]]; then
-    echo "$XMETA"
+    echo "mount and manage encrypted persistent storage"
     exit 0
 fi
 
-DEVICE="/dev/mapper/DATA"
-LUKS_DEVICE="/dev/nvme1n1p1"
-MAPPER_NAME="DATA"
+set -euo pipefail
 
-declare -Ar MOUNTPOINT=(
+XMNT_NAME="xmnt"
+XMNT_MAPPER="DATA"
+XMNT_LUKS_DEVICE="/dev/nvme1n1p1"
+XMNT_MAPPER_DEVICE="/dev/mapper/DATA"
+
+declare -Ar XMNT_MOUNTPOINTS=(
     [data]="/mnt/data"
     [vm]="/mnt/data/vm"
 )
 
-declare -Ar SUBVOL=(
+declare -Ar XMNT_SUBVOLS=(
     [data]="@"
     [vm]="@vm"
 )
 
-declare -Ar MOUNT_GROUPS=(
+declare -Ar XMNT_CONTROLLERS=(
+    [data]="DATA"
+    [vm]="DATA"
+)
+
+declare -Ar XMNT_GROUPS=(
     [persistent]="data vm"
     [both]="data vm"
     [all]="data vm"
 )
 
 die() {
-    echo "xmnt: $*" >&2
+    printf '%s: %s\n' "$XMNT_NAME" "$*" >&2
     exit 1
 }
 
-unlock() {
-    [[ -e "$DEVICE" ]] && return
+usage() {
+    cat <<EOF
+Usage:
+  xmnt mount <name>
+  xmnt mount <group>
+  xmnt <name>
+  xmnt <group>
 
-    echo "Unlocking $MAPPER_NAME..."
-    sudo cryptsetup open "$LUKS_DEVICE" "$MAPPER_NAME"
+  xmnt umount <name>
+  xmnt umount <group>
+
+  xmnt open
+  xmnt close
+  xmnt list
+  xmnt status [--verbose]
+  xmnt doctor
+
+Names:
+  data
+  vm
+
+Groups:
+  persistent
+  both
+  all
+
+Options:
+  -h, --help
+  --meta
+EOF
 }
 
-maybe_lock() {
-    local target
+is_mount_name() {
+    [[ -n "${XMNT_MOUNTPOINTS[$1]+x}" ]]
+}
 
-    # Don't close if anything is still mounted.
-    for target in "${MOUNTPOINT[@]}"; do
-        if mountpoint -q "$target"; then
-            return
+is_mount_group() {
+    [[ -n "${XMNT_GROUPS[$1]+x}" ]]
+}
+
+sorted_mount_names() {
+    mapfile -t XMNT_SORTED_NAMES < <(printf '%s\n' "${!XMNT_MOUNTPOINTS[@]}" | sort)
+}
+
+sorted_group_names() {
+    mapfile -t XMNT_SORTED_GROUPS < <(printf '%s\n' "${!XMNT_GROUPS[@]}" | sort)
+}
+
+unlock() {
+    if [[ -e "$XMNT_MAPPER_DEVICE" ]]; then
+        printf '✓ %s already unlocked\n' "$XMNT_MAPPER"
+        return 0
+    fi
+
+    printf 'Unlocking %s...\n' "$XMNT_MAPPER"
+    sudo cryptsetup open "$XMNT_LUKS_DEVICE" "$XMNT_MAPPER"
+    printf '✓ Unlocked %s\n' "$XMNT_MAPPER"
+}
+
+container_has_active_mounts() {
+    local name
+
+    for name in "${!XMNT_MOUNTPOINTS[@]}"; do
+        if mountpoint -q "${XMNT_MOUNTPOINTS[$name]}"; then
+            return 0
         fi
     done
 
-    # Already closed.
-    [[ -e "$DEVICE" ]] || return
-
-    echo "Locking $MAPPER_NAME..."
-    sudo cryptsetup close "$MAPPER_NAME"
+    return 1
 }
 
-exists() {
-    [[ -n "${MOUNTPOINT[$1]+x}" ]]
+active_mount_names() {
+    local name
+
+    for name in "${!XMNT_MOUNTPOINTS[@]}"; do
+        if mountpoint -q "${XMNT_MOUNTPOINTS[$name]}"; then
+            printf '%s\n' "$name"
+        fi
+    done
 }
 
-mount_target() {
+maybe_close() {
+    if container_has_active_mounts; then
+        return 0
+    fi
+
+    if [[ ! -e "$XMNT_MAPPER_DEVICE" ]]; then
+        return 0
+    fi
+
+    printf 'Closing %s...\n' "$XMNT_MAPPER"
+    sudo cryptsetup close "$XMNT_MAPPER"
+    printf '✓ Closed %s\n' "$XMNT_MAPPER"
+}
+
+close_container() {
+    local -a active=()
+    mapfile -t active < <(active_mount_names)
+
+    if (( ${#active[@]} )); then
+        die "cannot close while mounted: ${active[*]}"
+    fi
+
+    if [[ ! -e "$XMNT_MAPPER_DEVICE" ]]; then
+        printf '✓ %s already closed\n' "$XMNT_MAPPER"
+        return 0
+    fi
+
+    printf 'Closing %s...\n' "$XMNT_MAPPER"
+    sudo cryptsetup close "$XMNT_MAPPER"
+    printf '✓ Closed %s\n' "$XMNT_MAPPER"
+}
+
+mount_one_no_unlock() {
     local name="$1"
 
-    exists "$name" || die "Unknown mount: $name"
+    is_mount_name "$name" || die "unknown mount: $name"
 
-    local target="${MOUNTPOINT[$name]}"
-    local subvol="${SUBVOL[$name]}"
+    local target="${XMNT_MOUNTPOINTS[$name]}"
+    local subvol="${XMNT_SUBVOLS[$name]}"
 
     if mountpoint -q "$target"; then
-        echo "✓ $name already mounted"
-        return
+        printf '✓ %s already mounted\n' "$name"
+        return 0
     fi
 
     sudo mkdir -p "$target"
 
-    echo "Mounting $name..."
+    printf 'Mounting %s...\n' "$name"
+    sudo mount -o "compress=zstd:3,noatime,subvol=$subvol" "$XMNT_MAPPER_DEVICE" "$target"
+    printf '✓ Mounted %s\n' "$name"
+}
 
-    sudo mount \
-        -o "compress=zstd:3,noatime,subvol=$subvol" \
-        "$DEVICE" \
-        "$target"
+mount_one() {
+    local name="$1"
 
-    echo "✓ Mounted $name"
+    unlock
+    mount_one_no_unlock "$name"
 }
 
 mount_group() {
     local group="$1"
 
-    [[ -n "${MOUNT_GROUPS[$group]+x}" ]] || die "Unknown group: $group"
+    is_mount_group "$group" || die "unknown group: $group"
 
     unlock
 
-    for target in ${MOUNT_GROUPS[$group]}; do
-        mount_target "$target"
+    local -a names=()
+    read -r -a names <<<"${XMNT_GROUPS[$group]}"
+
+    local name
+    for name in "${names[@]}"; do
+        mount_one_no_unlock "$name"
     done
 }
 
-umount_target() {
+umount_one() {
     local name="$1"
 
-    exists "$name" || die "Unknown mount: $name"
+    is_mount_name "$name" || die "unknown mount: $name"
 
-    local target="${MOUNTPOINT[$name]}"
+    local target="${XMNT_MOUNTPOINTS[$name]}"
 
     if ! mountpoint -q "$target"; then
-        echo "✓ $name already unmounted"
-        return
+        printf '✓ %s already unmounted\n' "$name"
+        maybe_close
+        return 0
     fi
 
-    echo "Unmounting $name..."
+    printf 'Unmounting %s...\n' "$name"
     sudo umount "$target"
-    echo "✓ Unmounted $name"
+    printf '✓ Unmounted %s\n' "$name"
 
-    maybe_lock
+    maybe_close
 }
 
 umount_group() {
     local group="$1"
 
-    [[ -n "${MOUNT_GROUPS[$group]+x}" ]] || die "Unknown group: $group"
+    is_mount_group "$group" || die "unknown group: $group"
 
-    # reverse order
-    local mounts=(${MOUNT_GROUPS[$group]})
+    local -a names=()
+    read -r -a names <<<"${XMNT_GROUPS[$group]}"
 
-    for ((i=${#mounts[@]}-1; i>=0; i--)); do
-        umount_target "${mounts[$i]}"
+    local i
+    for ((i=${#names[@]}-1; i>=0; i--)); do
+        umount_one "${names[$i]}"
     done
 }
 
-status() {
-    printf "%-10s %-12s %s\n" "NAME" "STATUS" "MOUNTPOINT"
+list_mounts() {
+    local -a names=()
+    sorted_mount_names
+    names=("${XMNT_SORTED_NAMES[@]}")
 
-    for name in $(printf '%s\n' "${!MOUNTPOINT[@]}" | sort); do
-        if mountpoint -q "${MOUNTPOINT[$name]}"; then
+    printf '%-10s %-12s %-24s %-8s %s\n' "NAME" "CONTAINER" "MOUNTPOINT" "SUBVOL" "SOURCE"
+
+    local name
+    for name in "${names[@]}"; do
+        printf '%-10s %-12s %-24s %-8s %s\n' \
+            "$name" \
+            "${XMNT_CONTROLLERS[$name]}" \
+            "${XMNT_MOUNTPOINTS[$name]}" \
+            "${XMNT_SUBVOLS[$name]}" \
+            "$XMNT_MAPPER_DEVICE"
+    done
+}
+
+status_mounts() {
+    local verbose=false
+    case "${1:-}" in
+        ""|-v|--verbose)
+            [[ "${1:-}" != "" ]] && verbose=true
+            ;;
+        *)
+            die "unknown option for status: $1"
+            ;;
+    esac
+
+    local -a names=()
+    sorted_mount_names
+    names=("${XMNT_SORTED_NAMES[@]}")
+
+    if $verbose; then
+        printf '%-10s %-12s %-24s %-8s %s\n' "NAME" "STATUS" "MOUNTPOINT" "SUBVOL" "SOURCE"
+    else
+        printf '%-10s %-12s %s\n' "NAME" "STATUS" "MOUNTPOINT"
+    fi
+
+    local name target state
+    for name in "${names[@]}"; do
+        target="${XMNT_MOUNTPOINTS[$name]}"
+        if mountpoint -q "$target"; then
             state="mounted"
         else
             state="not mounted"
         fi
 
-        printf "%-10s %-12s %s\n" \
-            "$name" \
-            "$state" \
-            "${MOUNTPOINT[$name]}"
+        if $verbose; then
+            printf '%-10s %-12s %-24s %-8s %s\n' \
+                "$name" \
+                "$state" \
+                "$target" \
+                "${XMNT_SUBVOLS[$name]}" \
+                "$XMNT_MAPPER_DEVICE"
+        else
+            printf '%-10s %-12s %s\n' \
+                "$name" \
+                "$state" \
+                "$target"
+        fi
     done
 }
 
-list() {
-    printf "%-10s %-25s %s\n" "NAME" "MOUNTPOINT" "SUBVOL"
+doctor() {
+    printf 'Container:\n'
+    if [[ -e "$XMNT_MAPPER_DEVICE" ]]; then
+        printf '  unlocked\n'
+    else
+        printf '  locked\n'
+    fi
 
-    for name in $(printf '%s\n' "${!MOUNTPOINT[@]}" | sort); do
-        printf "%-10s %-25s %s\n" \
-            "$name" \
-            "${MOUNTPOINT[$name]}" \
-            "${SUBVOL[$name]}"
-    done
+    printf '\nMounts:\n'
+    status_mounts --verbose
+
+    printf '\nFilesystem:\n'
+    if command -v findmnt >/dev/null 2>&1 && mountpoint -q "${XMNT_MOUNTPOINTS[data]}"; then
+        findmnt -no FSTYPE,OPTIONS --target "${XMNT_MOUNTPOINTS[data]}"
+    else
+        printf '  unavailable\n'
+    fi
+
+    printf '\nFree space:\n'
+    if mountpoint -q "${XMNT_MOUNTPOINTS[data]}"; then
+        df -h "${XMNT_MOUNTPOINTS[data]}"
+    else
+        printf '  unavailable\n'
+    fi
 }
 
-usage() {
-cat <<EOF
-Usage:
-  xmnt data
-  xmnt vm
-  xmnt persistent
-  xmnt both
-  xmnt all
-
-  xmnt list
-  xmnt status
-
-  xmnt umount data
-  xmnt umount vm
-  xmnt umount persistent
-  xmnt umount all
-
-Options:
-  --help     Show this help
-  --meta     Print metadata description
-EOF
+main() {
+    case "${1:-}" in
+        -h|--help|help|"")
+            usage
+            ;;
+        data|vm)
+            mount_one "$1"
+            ;;
+        persistent|both|all)
+            mount_group "$1"
+            ;;
+        mount)
+            shift
+            case "${1:-}" in
+                data|vm)
+                    mount_one "$1"
+                    ;;
+                persistent|both|all)
+                    mount_group "$1"
+                    ;;
+                *)
+                    usage
+                    exit 1
+                    ;;
+            esac
+            ;;
+        umount|unmount)
+            shift
+            case "${1:-}" in
+                data|vm)
+                    umount_one "$1"
+                    ;;
+                persistent|both|all)
+                    umount_group "$1"
+                    ;;
+                *)
+                    usage
+                    exit 1
+                    ;;
+            esac
+            ;;
+        open)
+            unlock
+            ;;
+        close)
+            close_container
+            ;;
+        list)
+            list_mounts
+            ;;
+        status)
+            shift
+            status_mounts "${1:-}"
+            ;;
+        doctor)
+            doctor
+            ;;
+        *)
+            die "unknown command: $1"
+            ;;
+    esac
 }
 
-case "${1:-}" in
-    data|vm)
-        unlock
-        mount_target "$1"
-        ;;
-
-    persistent|both|all)
-        mount_group "$1"
-        ;;
-
-    status)
-        status
-        ;;
-
-    list)
-        list
-        ;;
-
-    umount)
-        shift
-
-        case "${1:-}" in
-            data|vm)
-                umount_target "$1"
-                ;;
-            persistent|both|all)
-                umount_group "$1"
-                ;;
-            *)
-                usage
-                exit 1
-                ;;
-        esac
-        ;;
-
-    -h|--help|help|"")
-        usage
-        ;;
-
-    *)
-        die "Unknown command '$1'"
-        ;;
-esac
+main "$@"

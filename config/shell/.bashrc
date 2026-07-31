@@ -8,6 +8,17 @@ source ~/.local/share/omarchy/default/bash/rc
 # Append history instead of overwriting it (atomic writes)
 shopt -s histappend
 
+# Command completion suggestions
+COMPLETION_DIR="$HOME/dotfiles/config/shell/completions"
+
+if [[ -d "$COMPLETION_DIR" ]]; then
+    shopt -s nullglob
+
+    for completion in "$COMPLETION_DIR"/*; do
+        source "$completion"
+    done
+fi
+
 # Add your own exports, aliases, and functions here.
 #
 # Make an alias for invoking commands you use constantly

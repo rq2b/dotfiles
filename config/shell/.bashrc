@@ -9,15 +9,9 @@ source ~/.local/share/omarchy/default/bash/rc
 shopt -s histappend
 
 # Command completion suggestions
-COMPLETION_DIR="$HOME/dotfiles/config/shell/completions"
-
-if [[ -d "$COMPLETION_DIR" ]]; then
-    shopt -s nullglob
-
-    for completion in "$COMPLETION_DIR"/*; do
-        source "$completion"
-    done
-fi
+for completion in ~/.local/share/bash-completion/*; do
+    [[ -f "$completion" ]] && source "$completion"
+done
 
 # Add your own exports, aliases, and functions here.
 #

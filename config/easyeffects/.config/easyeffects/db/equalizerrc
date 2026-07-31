@@ -19,6 +19,7 @@ band3Frequency=6000
 band3Gain=3
 
 [soe][Equalizer#0]
+decramp=5
 numBands=14
 
 [soe][Equalizer#0#left]

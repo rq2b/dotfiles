@@ -1,10 +1,19 @@
 [Unit]
 Description=Switch EasyEffects presets based on audio port
 
+PartOf=graphical-session.target
+After=graphical-session.target
+After=app-com.github.wwmm.easyeffects@autostart.service
+Requires=app-com.github.wwmm.easyeffects@autostart.service
+
 [Service]
 ExecStart=%h/.local/bin/easyeffects-port-switch
 Restart=always
 RestartSec=5
 
+EnvironmentFile=-%t/uwsm/env_session.conf
+
+Slice=app-graphical.slice
+
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target

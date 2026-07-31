@@ -5,6 +5,9 @@
 # (don't mess with these directly, just overwrite them here!)
 source ~/.local/share/omarchy/default/bash/rc
 
+# Append history instead of overwriting it (atomic writes)
+shopt -s histappend
+
 # Add your own exports, aliases, and functions here.
 #
 # Make an alias for invoking commands you use constantly

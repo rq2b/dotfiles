@@ -4,6 +4,14 @@ set -euo pipefail
 SINK="alsa_output.pci-0000_00_1f.3.analog-stereo"
 last=""
 
+wait_for_easyeffects() {
+    # Increased sleep to 1 second to drastically reduce boot-up CPU polling
+    while ! pgrep -x easyeffects >/dev/null; do
+        sleep 1
+    done
+    sleep 1
+}
+
 get_port() {
     pactl list sinks | awk -v sink="$SINK" '
         $1 == "Name:" && $2 == sink { found=1 }
@@ -11,22 +19,42 @@ get_port() {
     '
 }
 
-while true; do
-    port="$(get_port)"
-
-    if [[ "$port" != "$last" ]]; then
-        case "$port" in
-            analog-output-lineout)
-                easyeffects -l speakers-mono
-                ;;
-
-            analog-output-headphones)
-                easyeffects -l headphones-stereo
-                ;;
-        esac
-
-        last="$port"
+load_preset() {
+    local preset="$1"
+    if ! easyeffects -l "$preset"; then
+        printf 'Failed to load preset "%s"\n' "$preset" >&2
     fi
+}
 
-    sleep 1
+wait_for_easyeffects
+
+# Run once at startup to set initial state
+port="$(get_port)"
+if [[ -n "$port" ]]; then
+    case "$port" in
+        analog-output-lineout)    load_preset speakers-mono ;;
+        analog-output-headphones) load_preset headphones-stereo ;;
+    esac
+    last="$port"
+fi
+
+# Event-driven loop: Blocks indefinitely until an audio change occurs
+pactl subscribe | mixed_read= while read -r line; do
+    # Only trigger when a sink event happens
+    if [[ "$line" =~ "Event 'change' on sink" ]]; then
+        port="$(get_port)"
+        
+        if [[ -n "$port" && "$port" != "$last" ]]; then
+            case "$port" in
+                analog-output-lineout)
+                    load_preset speakers-mono
+                    ;;
+                analog-output-headphones)
+                    load_preset headphones-stereo
+                    ;;
+            fi
+            last="$port"
+        fi
+    fi
 done
+

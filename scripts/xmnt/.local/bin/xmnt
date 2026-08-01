@@ -9,7 +9,7 @@ set -euo pipefail
 
 XMNT_NAME="xmnt"
 XMNT_MAPPER="DATA"
-XMNT_LUKS_DEVICE="/dev/nvme1n1p1"
+XMNT_LUKS_DEVICE="/dev/disk/by-uuid/5be0d791-460b-447a-8b71-3092d94c1a84"
 XMNT_MAPPER_DEVICE="/dev/mapper/DATA"
 
 declare -Ar XMNT_MOUNTPOINTS=(

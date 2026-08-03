@@ -29,11 +29,11 @@
   padding: 0 6px;
   margin: 0 1.5px;
   min-width: 9px;
-  color: #bdbdbd;
+  color: #787878;
 }
 
 #workspaces button.empty {
-  color: #787878;
+  color: #bababa;
 }
 
 #workspaces button.active {

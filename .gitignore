@@ -18,3 +18,5 @@
 datasets.tab
 
 __pycache__/
+
+config/easyeffects/.config/easyeffects/db/easyeffectsrc

@@ -17,6 +17,8 @@
 
 .modules-left {
   margin-left: 8px;
+  margin-bottom: 8px;
+  margin-top: 0;
 }
 
 .modules-right {
@@ -31,11 +33,13 @@
 }
 
 #workspaces button.empty {
-  color: #686868;
+  color: #787878;
 }
 
 #workspaces button.active {
   color: #fff;
+  border-bottom: 1px solid #bdbdbd;
+  background: rgba(104, 104, 104, 0.30);
 }
 
 #cpu,

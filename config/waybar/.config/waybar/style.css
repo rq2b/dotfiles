@@ -30,6 +30,10 @@
   color: #bdbdbd;
 }
 
+#workspaces button.empty {
+  color: #686868;
+}
+
 #workspaces button.active {
   color: #fff;
 }

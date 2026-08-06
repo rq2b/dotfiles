@@ -125,12 +125,12 @@ if [[ "$SELECTION" =~ ^([0-9]+),([0-9]+)[[:space:]]([0-9]+)x([0-9]+)$ ]]; then
   fi
 fi
 
-grim -g "$SELECTION" "$TMP_PATH" || exit 1
+grim -g "$SELECTION" "$TMP_PATH" >/dev/null || exit 1
 
 [[ -f "$TMP_PATH" ]] || exit 0
 
 hyprctl dispatch exec \
-  "[float; size 430 250; center 1] \
+  "[float; size 430 230; center 1] \
    kitty --class screenshot-gum \
    -e $HOME/src/screenshot-to-obsidian/screenshot-gum-menu.sh \
    $TMP_PATH $IMG_NAME"

@@ -43,62 +43,6 @@ hyprctl dispatch movetoworkspacesilent special:screenshot-gum
 trap '[[ -n "${TMP_PATH:-}" ]] && rm -f "$TMP_PATH"' EXIT
 
 for ACTION in "${ACTIONS[@]}"; do
-  if ! (
-    set -euo pipefail
-
-    case "$ACTION" in
-      "Send to Obsidian")
-        "$SCRIPT_DIR/screenshot-to-obsidian.sh" \
-          "$TMP_PATH" "$IMG_NAME"
-        ;;
-
-      "Save to Downloads")
-        cp -f "$TMP_PATH" "$HOME/Downloads/$IMG_NAME"
-        ;;
-
-      "Copy to Clipboard")
-        setsid wl-copy \
-          --type image/png \
-          < "$TMP_PATH" \
-          >/dev/null 2>&1 &
-        ;;
-
-      "Open in Editor")
-        readonly TMP="$TMP_PATH"
-        readonly OUT="$HOME/Downloads/$IMG_NAME"
-
-        setsid bash -c '
-            set -euo pipefail
-
-            trap '\''rm -f "$1"'\'' EXIT
-
-            satty \
-                --filename "$1" \
-                --output-filename "$2" \
-                --actions-on-escape exit \
-                --early-exit save save-as
-        ' _ "$TMP" "$OUT" >/dev/null 2>&1 &
-
-        TMP_PATH=""
-        ;;
-
-      "Save to Location")
-        SAVE_PATH="$(
-          zenity \
-            --file-selection \
-            --save \
-            --filename="$HOME/$IMG_NAME" \
-            --title="Save Screenshot"
-        )"
-
-        [[ -n "$SAVE_PATH" ]] && cp -f "$TMP_PATH" "$SAVE_PATH"
-        ;;
-    esac
-  ); then
-    notify-send -t 1000 "$ACTION failed"
-  fi
-done
-for ACTION in "${ACTIONS[@]}"; do
   case "$ACTION" in
     "Send to Obsidian")
       if ! "$SCRIPT_DIR/screenshot-to-obsidian.sh" \
@@ -150,4 +94,3 @@ for ACTION in "${ACTIONS[@]}"; do
       ;;
   esac
 done
-

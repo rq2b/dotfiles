@@ -24,7 +24,6 @@ alias terminal-copy='kitty @ get-text --extent=all | wl-copy'
 alias striprefs="perl -0777 -i -pe 's/\s*:contentReference\[oaicite:\d+\]\{index=\d+\}//g'"
 alias ctx="xctx"
 alias ncat="xcat"
-alias claude-router='source /etc/claude.sh && claude'
 
 # yt music -> opus file / playlist
 ytopus() {

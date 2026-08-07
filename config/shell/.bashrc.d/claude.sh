@@ -66,3 +66,33 @@ claude-profile-check() {
         echo "$token"
     fi
 }
+
+cc-native() {
+    proxy-up >/dev/null || return
+
+    if [[ -z "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+        echo "ANTHROPIC_AUTH_TOKEN is not set."
+        return 1
+    fi
+
+    ANTHROPIC_BASE_URL=http://127.0.0.1:8787 \
+        claude --dangerously-skip-permissions "$@"
+}
+
+claude-source-profile() {
+    if (( $# != 1 )); then
+        echo "Usage: claude-source-profile <profile>"
+        return 1
+    fi
+
+    local profile="$HOME/.config/claude/sandboxes/$1.env"
+
+    [[ -f "$profile" ]] || {
+        echo "Profile not found: $profile"
+        return 1
+    }
+
+    set -a
+    source "$profile"
+    set +a
+}

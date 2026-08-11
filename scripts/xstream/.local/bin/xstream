@@ -31,7 +31,7 @@ ensure_credentials() {
     chmod 700 "$(dirname "$CRED_FILE")"
 
     local password
-    password="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)"
+    password="$(openssl rand -hex 12)"
 
     umask 077
     printf 'xstream:%s\n' "$password" > "$CRED_FILE"

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # metadata
-XMETA="stream monitor screenshots over local HTTP"
+XMETA="stream monitor screenshots over authenticated local HTTP"
 
 if [[ "${1:-}" == "--meta" ]]; then
     echo "$XMETA"
@@ -12,10 +12,34 @@ set -euo pipefail
 
 PIDFILE="/tmp/xstream.pid"
 DIR="/tmp/xstream"
-PORT=8080
+PORT="${XSTREAM_PORT:-8080}"
+BIND="${XSTREAM_BIND:-0.0.0.0}"
+SERVER="$(dirname "$(readlink -f "$0")")/xstream-server.py"
+CRED_FILE="${XSTREAM_CRED_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/xstream/credentials}"
 
 log() {
     echo "[xstream] $*"
+}
+
+ensure_credentials() {
+    if [[ -f "$CRED_FILE" ]]; then
+        chmod 600 "$CRED_FILE"
+        return
+    fi
+
+    mkdir -p "$(dirname "$CRED_FILE")"
+    chmod 700 "$(dirname "$CRED_FILE")"
+
+    local password
+    password="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)"
+
+    umask 077
+    printf 'xstream:%s\n' "$password" > "$CRED_FILE"
+
+    log "Created $CRED_FILE"
+    log "Username: xstream"
+    log "Password: $password"
+    log "Share these with the people you trust. Nobody else can view the stream."
 }
 
 select_monitor() {
@@ -62,64 +86,59 @@ select_monitor() {
 }
 
 start() {
-    if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-        log "Already running (PID $(cat "$PIDFILE"))"
+    if [[ -f "$PIDFILE" ]] && running; then
+        log "Already running"
+        status
         exit 1
     fi
 
+    rm -f "$PIDFILE"
+
+    if [[ ! -f "$SERVER" ]]; then
+        log "Cannot find $SERVER"
+        exit 1
+    fi
+
+    ensure_credentials
     select_monitor
 
     mkdir -p "$DIR"
-
-    cat > "$DIR/index.html" <<'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-body {
-    margin: 0;
-    background: black;
-}
-
-img {
-    width: 100vw;
-    height: 100vh;
-    object-fit: contain;
-}
-</style>
-</head>
-<body>
-<img id="img" src="screen.jpg">
-<script>
-setInterval(() => {
-    document.getElementById("img").src = "screen.jpg?t=" + Date.now();
-}, 1000);
-</script>
-</body>
-</html>
-EOF
+    chmod 700 "$DIR"
 
     log "Starting screenshot loop + server..."
 
+    # grim writes to a temp file, then rename() swaps it in atomically.
+    # Without this a viewer can fetch a half-written JPEG.
     setsid bash -c "
-        export WAYLAND_DISPLAY=wayland-1
-        export XDG_RUNTIME_DIR=/run/user/$(id -u)
-
         while true; do
-            grim -o '$MONITOR' -t jpeg -q 50 '$DIR/screen.jpg'
+            if grim -o '$MONITOR' -t jpeg -q 50 '$DIR/.screen.jpg.tmp'; then
+                mv -f '$DIR/.screen.jpg.tmp' '$DIR/screen.jpg'
+            fi
             sleep 1
         done
     " >/dev/null 2>&1 &
 
     LOOP_PID=$!
 
-    setsid bash -c "
-        cd '$DIR'
-        python3 -m http.server $PORT
-    " >/dev/null 2>&1 &
+    # exec replaces the shell with python, so the recorded PID is the server
+    # itself. The old script recorded the wrapper shell, which is why `stop`
+    # left an orphaned server listening on the port.
+    XSTREAM_DIR="$DIR" \
+    XSTREAM_BIND="$BIND" \
+    XSTREAM_PORT="$PORT" \
+    XSTREAM_CRED_FILE="$CRED_FILE" \
+    setsid bash -c "exec python3 '$SERVER'" >/dev/null 2>&1 &
 
     SERVER_PID=$!
+
+    sleep 0.3
+
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        log "Server failed to start. Run it directly to see the error:"
+        log "  XSTREAM_DIR=$DIR python3 $SERVER"
+        kill -- -"$LOOP_PID" 2>/dev/null || kill "$LOOP_PID" 2>/dev/null || true
+        exit 1
+    fi
 
     echo "$LOOP_PID $SERVER_PID" > "$PIDFILE"
 
@@ -127,7 +146,26 @@ EOF
     log "Monitor : $MONITOR"
     log "Loop PID: $LOOP_PID"
     log "HTTP PID: $SERVER_PID"
-    log "Open: http://10.0.0.77:$PORT"
+    log "Bound to: $BIND:$PORT (credentials required)"
+
+    local ts_ip
+    ts_ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+    if [[ -n "$ts_ip" ]]; then
+        log "Tailnet : http://$ts_ip:$PORT"
+    fi
+    log "Local   : http://127.0.0.1:$PORT"
+}
+
+# Kill a whole process group, falling back to the single PID.
+kill_group() {
+    local pid="$1"
+    kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+}
+
+running() {
+    [[ -f "$PIDFILE" ]] || return 1
+    read -r LOOP_PID SERVER_PID < "$PIDFILE"
+    kill -0 "$LOOP_PID" 2>/dev/null && kill -0 "$SERVER_PID" 2>/dev/null
 }
 
 stop() {
@@ -140,26 +178,27 @@ stop() {
 
     log "Stopping..."
 
-    kill "$LOOP_PID" 2>/dev/null || true
-    kill "$SERVER_PID" 2>/dev/null || true
+    kill_group "$LOOP_PID"
+    kill_group "$SERVER_PID"
 
-    rm -f "$PIDFILE"
+    rm -f "$PIDFILE" "$DIR/screen.jpg" "$DIR/.screen.jpg.tmp"
 
     log "Stopped"
 }
 
 status() {
-    if [[ -f "$PIDFILE" ]]; then
+    if running; then
         read -r LOOP_PID SERVER_PID < "$PIDFILE"
-
-        if kill -0 "$LOOP_PID" 2>/dev/null &&
-           kill -0 "$SERVER_PID" 2>/dev/null; then
-            log "Running (loop=$LOOP_PID, server=$SERVER_PID)"
-            return
-        fi
+        log "Running (loop=$LOOP_PID, server=$SERVER_PID)"
+        return
     fi
 
     log "Not running"
+
+    if ss -tlnp 2>/dev/null | grep -q ":$PORT "; then
+        log "WARNING: something else is still listening on port $PORT:"
+        ss -tlnp 2>/dev/null | grep ":$PORT " || true
+    fi
 }
 
 case "${1:-}" in
@@ -173,10 +212,14 @@ case "${1:-}" in
         status
         ;;
     restart)
-        stop
+        stop || true
         start
         ;;
+    creds)
+        ensure_credentials
+        log "Credentials file: $CRED_FILE"
+        ;;
     *)
-        echo "Usage: xstream {start|stop|status|restart}"
+        echo "Usage: xstream {start|stop|status|restart|creds}"
         ;;
 esac

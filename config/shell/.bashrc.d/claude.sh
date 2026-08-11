@@ -42,6 +42,9 @@ set +a
 EOF
 
 chmod +x /etc/sandbox-persistent.sh
+
+git config --global user.name "rq2b"
+git config --global user.email "alex.lysenko.ua@gmail.com"
 '
 
     echo

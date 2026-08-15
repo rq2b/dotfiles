@@ -16,6 +16,7 @@
 *.swp
 
 datasets.tab
+schedule.json
 
 __pycache__/
 

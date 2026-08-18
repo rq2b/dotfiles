@@ -56,10 +56,7 @@ for ACTION in "${ACTIONS[@]}"; do
       ;;
 
     "Copy to Clipboard")
-      setsid wl-copy \
-        --type image/png \
-        < "$TMP_PATH" \
-        >/dev/null 2>&1 &
+      wl-copy --type image/png < "$TMP_PATH"
       ;;
 
     "Open in Editor")

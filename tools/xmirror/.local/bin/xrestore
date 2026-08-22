@@ -8,6 +8,9 @@ if [[ "${1:-}" == "--meta" ]]; then
     exit 0
 fi
 
+echo "xrestore in transitional unsafe state; migration to python needed; quitting"
+exit 1
+
 set -euo pipefail
 
 die() {

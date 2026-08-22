@@ -8,6 +8,13 @@ if [[ "${1:-}" == "--meta" ]]; then
     exit 0
 fi
 
+# need to be VERY careful with xmirror as it can overwrite sensitive data 
+# (include meta with the dir itself, and do structure like xmirror - xmirror-
+# (machine hash? or similar) so that files don't get overwritten, 
+# and add the ability to restore files, also a tructure more similar to stow is needed)
+echo "xmirror in transitional unsafe state; migration to python needed; quitting"
+exit 1
+
 set -euo pipefail
 
 readonly XMIRROR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/xmirror"

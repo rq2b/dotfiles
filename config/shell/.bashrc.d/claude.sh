@@ -6,7 +6,7 @@ proxy-up() {
 
 cc() {
   proxy-up >/dev/null || return
-  sbx run --name "${CLAUDE_SBX_NAME:-claude-$(basename "$PWD")}" claude
+  HERDR_AGENT=claude sbx run --name "${CLAUDE_SBX_NAME:-$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g; s/-\+/-/g; s/^-//; s/-$//')}" claude
 }
 
 claude-profile() {

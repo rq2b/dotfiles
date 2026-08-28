@@ -10,8 +10,7 @@ fi
 
 set -euo pipefail
 
-BASE="$HOME/Syncthing/core/Media/gpt-context"
-COLD="$BASE/cold"
+BASE="$HOME/Syncthing/core/90 - Archive/Context Exchange"
 
 show_help() {
     cat <<EOF
@@ -45,9 +44,7 @@ is_allowed_extension() {
     local ext="$1"
 
     for allowed in "${ALLOWED_EXTENSIONS[@]}"; do
-        if [[ "$allowed" == "$ext" ]]; then
-            return 0
-        fi
+        [[ "$allowed" == "$ext" ]] && return 0
     done
 
     return 1
@@ -65,22 +62,14 @@ if [[ "${1:-}" == "--open" ]]; then
     exit 0
 fi
 
-# Fail fast if base directory does not exist
+# Base directory must exist
 if [[ ! -d "$BASE" ]]; then
     echo "Base directory does not exist:"
     echo "$BASE"
     exit 1
 fi
 
-# Create archive directory if missing
-mkdir -p "$COLD"
-
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-
-NAME=""
-EXT=""
-
-# Extension is now required
+# Extension is required
 if [[ $# -eq 0 ]]; then
     echo "Extension is required."
     echo
@@ -88,13 +77,12 @@ if [[ $# -eq 0 ]]; then
     exit 1
 fi
 
-# Last argument = extension
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+
+# Last argument is the extension
 EXT="${!#}"
+EXT="${EXT,,}"
 
-# Normalize extension
-EXT="$(printf '%s' "$EXT" | tr '[:upper:]' '[:lower:]')"
-
-# Validate extension
 if ! is_allowed_extension "$EXT"; then
     echo "Refusing to save file."
     echo "Unknown or disallowed extension: '$EXT'"
@@ -104,68 +92,44 @@ if ! is_allowed_extension "$EXT"; then
     exit 1
 fi
 
-# Everything except last arg = filename
+# Everything before the extension becomes the filename suffix
+NAME=""
+
 if [[ $# -gt 1 ]]; then
-    PARTS=("${@:1:$#-1}")
-
-    NAME="$(printf '%s ' "${PARTS[@]}")"
-
-    # Trim trailing space
-    NAME="${NAME% }"
-
-    # Normalize
+    NAME="${*:1:$#-1}"
     NAME="${NAME// /-}"
+    NAME="${NAME,,}"
 
-    # Lowercase
-    NAME="$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]')"
-
-    # Remove dangerous characters
-    NAME="$(printf '%s' "$NAME" | sed 's/[^a-zA-Z0-9._-]/-/g')"
-
-    # Prevent path traversal
-    NAME="$(basename -- "$NAME")"
-
-    # Collapse repeated dashes
-    NAME="$(printf '%s' "$NAME" | sed 's/-\{2,\}/-/g')"
-
-    # Remove leading/trailing dashes
-    NAME="$(printf '%s' "$NAME" | sed 's/^-\+//; s/-\+$//')"
+    # Replace anything outside the safe filename set with '-'
+    NAME="$(printf '%s' "$NAME" | sed 's/[^a-z0-9._-]/-/g; s/-\{2,\}/-/g; s/^-*//; s/-*$//')"
 fi
 
-# Construct filename
-if [[ -z "$NAME" ]]; then
-    FILENAME="${TIMESTAMP}.${EXT}"
-else
-    FILENAME="${TIMESTAMP}_${NAME}.${EXT}"
-fi
+FILENAME="${TIMESTAMP}"
+[[ -n "$NAME" ]] && FILENAME+="_${NAME}"
+FILENAME+=".${EXT}"
 
 TARGET="$BASE/$FILENAME"
-
-# Move existing hot files into cold/
-find "$BASE" \
-    -maxdepth 1 \
-    -type f \
-    ! -name '.*' \
-    -exec mv {} "$COLD"/ \;
 
 # Input priority:
 # 1. stdin
 # 2. clipboard
-if [ -p /dev/stdin ]; then
+if [[ -p /dev/stdin ]]; then
     cat > "$TARGET"
 else
-    CLIP="$(
+    if ! CLIP="$(
         wl-paste 2>/dev/null ||
-        xclip -selection clipboard -o 2>/dev/null ||
-        true
-    )"
-
-    if [[ -z "$CLIP" ]]; then
+        xclip -selection clipboard -o 2>/dev/null
+    )"; then
         echo "No stdin or clipboard content."
         exit 1
     fi
 
-    printf "%s" "$CLIP" > "$TARGET"
+    [[ -n "$CLIP" ]] || {
+        echo "No stdin or clipboard content."
+        exit 1
+    }
+
+    printf '%s' "$CLIP" > "$TARGET"
 fi
 
 # Open Nautilus

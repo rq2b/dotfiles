@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+if [[ ! -x /mnt/data/velocidrone/app/velocidrone.x86_64 ]]; then
+    notify-send "VelociDrone" "Simulator files not found."
+    exit 1
+fi
+
+setsid /mnt/data/velocidrone/app/velocidrone.x86_64 </dev/null >/tmp/velocidrone.log 2>&1 &

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=VelociDrone
+Comment=VelociDrone FPV Simulator
+Exec=/home/staging/.local/bin/velocidrone
+Terminal=false
+Type=Application
+Icon=/home/staging/.local/share/applications/icons/velocidrone.webp
+StartupNotify=true
+Categories=Game;

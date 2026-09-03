@@ -20,7 +20,6 @@ done
 
 # aliases
 alias claer='clear'
-alias terminal-copy='kitty @ get-text --extent=all | wl-copy'
 alias striprefs="perl -0777 -i -pe 's/\s*:contentReference\[oaicite:\d+\]\{index=\d+\}//g'"
 alias ctx="xctx"
 alias ncat="xcat"
@@ -40,6 +39,17 @@ detach() {
   setsid "$@" </dev/null >>"$log" 2>&1 &
   echo "Detached: $*"
   echo "Log: $log"
+}
+
+terminal-copy() {
+    if [ -n "$HERDR_PANE_ID" ]; then
+        herdr pane read "$HERDR_PANE_ID" --source recent-unwrapped --lines 100000 | wl-copy
+    elif [ -n "$KITTY_WINDOW_ID" ]; then
+        kitty @ get-text --extent=all | wl-copy
+    else
+        echo "terminal-copy: not running inside Kitty or Herdr" >&2
+        return 1
+    fi
 }
 
 # loading modular shell configs

@@ -59,3 +59,5 @@ if [ -d "$HOME/.bashrc.d" ]; then
     . "$f"
   done
 fi
+
+eval "$(thefuck --alias)"

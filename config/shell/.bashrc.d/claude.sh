@@ -78,7 +78,7 @@ cc-native() {
         return 1
     fi
 
-    ANTHROPIC_BASE_URL=http://127.0.0.1:8787 \
+    ANTHROPIC_BASE_URL=https://agentrouter.org/ \
         claude --dangerously-skip-permissions "$@"
 }
 

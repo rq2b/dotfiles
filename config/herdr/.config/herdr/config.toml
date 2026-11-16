@@ -5,3 +5,29 @@ prefix = "backtick"
 
 [ui]
 agent_panel_sort = "priority"
+
+[theme]
+name = "terminal"
+
+[theme.custom]
+panel_bg = "#222222"
+
+surface0 = "#222222"
+surface1 = "#222222"
+surface_dim = "#525252"
+
+overlay0 = "#686868"
+overlay1 = "#868686"
+
+text = "#bdbdbd"
+subtext0 = "#b9b9b9"
+
+accent = "#686868"
+
+mauve = "#747474"
+green = "#8b8b8b"
+yellow = "#a0a0a0"
+red = "#7c7c7c"
+blue = "#686868"
+teal = "#868686"
+peach = "#a0a0a0"

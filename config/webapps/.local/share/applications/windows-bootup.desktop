@@ -3,6 +3,7 @@ Version=1.0
 Name=Windows [bootup]
 Comment=Windows [bootup]
 Exec=omarchy-launch-webapp http://127.0.0.1:8006
+StartupWMClass=chrome-127.0.0.1__-Default
 Terminal=false
 Type=Application
 Icon=windows-bootup-icon

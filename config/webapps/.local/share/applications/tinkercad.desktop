@@ -3,6 +3,7 @@ Version=1.0
 Name=TinkerCAD
 Comment=TinkerCAD
 Exec=omarchy-launch-webapp https://www.tinkercad.com/dashboard/designs/circuits
+StartupWMClass=chrome-www.tinkercad.com__dashboard_designs_circuits-Default
 Terminal=false
 Type=Application
 Icon=tinkercad-icon

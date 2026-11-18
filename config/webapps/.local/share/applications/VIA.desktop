@@ -3,6 +3,7 @@ Version=1.0
 Name=VIA
 Comment=VIA
 Exec=omarchy-launch-webapp https://usevia.app/
+StartupWMClass=chrome-usevia.app__-Default
 Terminal=false
 Type=Application
 Icon=via-icon

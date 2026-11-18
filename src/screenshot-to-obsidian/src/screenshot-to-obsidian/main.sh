@@ -135,9 +135,9 @@ fi
 printf -v SAFE_SCRIPT '%q' "$SCRIPT_DIR/screenshot-gum-menu.sh"
 printf -v SAFE_TMP '%q' "$TMP_PATH"
 printf -v SAFE_NAME '%q' "$IMG_NAME"
-DISPATCH="[float; size 430 250; center 1] kitty --class screenshot-gum -e $SAFE_SCRIPT $SAFE_TMP $SAFE_NAME"
+DISPATCH="hl.dsp.exec_cmd([[$(printf '%s' "kitty --class screenshot-gum -e $SAFE_SCRIPT $SAFE_TMP $SAFE_NAME")]], { float = true, size = { 430, 250 }, center = true })"
 
-if DISPATCH_ERROR="$(hyprctl dispatch exec "$DISPATCH" 2>&1 >/dev/null)"; then
+if DISPATCH_ERROR="$(hyprctl dispatch "$DISPATCH" 2>&1 >/dev/null)"; then
     DISPATCH_STATUS=0
 else
     DISPATCH_STATUS=$?

@@ -39,4 +39,4 @@ H=$(jq -r '.size[1]' <<< "$WINDOW_JSON")
 CX=$(( X + W / 2 ))
 CY=$(( Y + H / 2 ))
 
-hyprctl dispatch movecursor "$CX $CY"
+hyprctl dispatch "hl.dsp.cursor.move({ x = $CX, y = $CY })"

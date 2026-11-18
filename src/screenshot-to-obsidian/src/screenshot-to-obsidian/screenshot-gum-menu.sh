@@ -80,7 +80,7 @@ if (( ${#ACTIONS[@]} == 0 )); then
     exit 0
 fi
 
-if WORKSPACE_ERROR="$(hyprctl dispatch movetoworkspacesilent special:screenshot-gum 2>&1 >/dev/null)"; then
+if WORKSPACE_ERROR="$(hyprctl dispatch 'hl.dsp.window.move({ workspace = "special:screenshot-gum", follow = false })' 2>&1 >/dev/null)"; then
     WORKSPACE_STATUS=0
 else
     WORKSPACE_STATUS=$?

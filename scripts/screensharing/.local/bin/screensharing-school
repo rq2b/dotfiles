@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+exec chromium \
+  --new-window \
+  --user-data-dir="${XDG_CONFIG_HOME:-$HOME/.config}/chromium-school-courses" \
+  --profile-directory="Profile 2" \
+  --app="http://127.0.0.1:8888/live/obs/" \
+  --start-fullscreen
